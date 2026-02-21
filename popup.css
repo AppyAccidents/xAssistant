@@ -704,3 +704,260 @@ input:checked+.slider:before {
   transform: scale(1.1);
   background: white;
 }
+
+/* ── Header right cluster ─────────────────────────────────────────────────── */
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── Tier badge ───────────────────────────────────────────────────────────── */
+.tier-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 10px;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.tier-free {
+  background: rgba(142, 142, 147, 0.18);
+  color: var(--text-secondary);
+}
+
+.tier-pro {
+  background: linear-gradient(135deg, #FF9500, #FF6B00);
+  color: #fff;
+  box-shadow: 0 1px 4px rgba(255, 149, 0, 0.35);
+}
+
+/* ── Rate limit bar ───────────────────────────────────────────────────────── */
+.rate-limit-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 3px 16px;
+  background: var(--bg-color);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.rate-limit-text {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* ── Knowledge Base export section ────────────────────────────────────────── */
+.kb-export-section {
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-color);
+  margin: 8px 0;
+}
+
+.kb-button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 16px;
+  background: linear-gradient(135deg, #007AFF, #5856D6);
+  color: white;
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  text-align: left;
+  box-shadow: 0 2px 8px rgba(0, 122, 255, 0.3);
+  transition: all 0.2s ease;
+}
+
+.kb-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(0, 122, 255, 0.4);
+}
+
+.kb-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.kb-icon {
+  font-size: 22px;
+  flex-shrink: 0;
+}
+
+.kb-btn-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.kb-primary {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.kb-secondary {
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.kb-progress {
+  margin-top: 10px;
+}
+
+.kb-progress-bar {
+  height: 4px;
+  background: var(--border-color);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.kb-progress-fill {
+  height: 100%;
+  background: var(--primary-color);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+  width: 0%;
+}
+
+.kb-progress-text {
+  font-size: 11px;
+  color: var(--text-secondary);
+  display: block;
+  margin-top: 4px;
+}
+
+/* ── Settings section ─────────────────────────────────────────────────────── */
+.settings-section {
+  margin: 16px 0;
+  padding: 16px;
+  background: var(--card-bg);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+}
+
+.settings-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0 0 12px 0;
+}
+
+.settings-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-color);
+  color: var(--text-color);
+  font-size: 13px;
+}
+
+.settings-hint {
+  display: block;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.settings-hint.success { color: var(--success-color); }
+.settings-hint.error   { color: var(--danger-color); }
+
+/* ── Subscription status ──────────────────────────────────────────────────── */
+.subscription-status {
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  margin-bottom: 12px;
+}
+
+.subscription-status.free {
+  background: rgba(142, 142, 147, 0.1);
+}
+
+.subscription-status.pro {
+  background: rgba(255, 149, 0, 0.1);
+  border: 1px solid rgba(255, 149, 0, 0.25);
+}
+
+.sub-tier-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.sub-tier-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.sub-tier-value {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-color);
+}
+
+.sub-description {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+/* ── Buy Me a Coffee upgrade box ─────────────────────────────────────────── */
+.bmc-upgrade-box {
+  margin-top: 16px;
+  padding: 14px;
+  background: linear-gradient(135deg, rgba(255, 149, 0, 0.08), rgba(255, 107, 0, 0.08));
+  border: 1px solid rgba(255, 149, 0, 0.3);
+  border-radius: var(--radius-md);
+}
+
+.bmc-upgrade-text {
+  font-size: 12px;
+  color: var(--text-color);
+  margin: 0 0 10px 0;
+}
+
+.bmc-price-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.bmc-price {
+  font-size: 14px;
+  font-weight: 700;
+  color: #FF9500;
+}
+
+.bmc-price-sep {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.bmc-btn {
+  display: block;
+  text-align: center;
+  padding: 9px 16px;
+  background: #FF9500;
+  color: #fff;
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 600;
+  transition: background 0.2s ease;
+}
+
+.bmc-btn:hover {
+  background: #E6860D;
+}

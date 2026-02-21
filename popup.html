@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>X Bookmarks Extractor</title>
+  <title>X Bookmarks Analyzer</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 
@@ -12,12 +12,21 @@
   <div class="container" id="popupRoot">
     <!-- Header -->
     <header class="header">
-      <span class="header-icon" aria-label="X Bookmarks Extractor Logo">
+      <span class="header-icon" aria-label="X Bookmarks Analyzer Logo">
         <span class="icon-x-bookmark"></span>
       </span>
-      <h1 class="main-title">X Bookmarks Extractor</h1>
-      <button class="icon-btn icon-close" id="closeBtn" aria-label="Close popup"></button>
+      <h1 class="main-title">X Bookmarks Analyzer</h1>
+      <div class="header-right">
+        <span id="tierBadge" class="tier-badge tier-free" title="Free plan – 3 bookmarks per export">Free</span>
+        <button class="icon-btn icon-close" id="closeBtn" aria-label="Close popup"></button>
+      </div>
     </header>
+
+    <!-- Rate limit bar -->
+    <div id="rateLimitBar" class="rate-limit-bar" title="Daily analysis quota">
+      <span id="rateLimitText" class="rate-limit-text">50 analyses remaining today</span>
+    </div>
+
     <main id="mainContent">
       <!-- Tabs Navigation -->
       <div class="tabs-nav">
@@ -46,7 +55,7 @@
             <span class="icon-scan"></span>
             <div class="btn-text">
               <span class="primary-text">Start Smart Scan</span>
-              <span class="secondary-text">Auto-scrolls & extracts all bookmarks</span>
+              <span class="secondary-text">Auto-scrolls &amp; extracts all bookmarks</span>
             </div>
           </button>
 
@@ -84,6 +93,21 @@
         </div>
         <div id="ai-results" class="ai-results-container"></div>
 
+        <!-- Knowledge Base Export – primary CTA -->
+        <div class="kb-export-section">
+          <button id="exportKbBtn" class="action-button kb-button" disabled>
+            <span class="kb-icon">📚</span>
+            <div class="kb-btn-text">
+              <span class="kb-primary">Export Knowledge Base</span>
+              <span class="kb-secondary" id="kbBtnSubtitle">Analyzes 3 bookmarks (Free)</span>
+            </div>
+          </button>
+          <div id="kbProgress" class="kb-progress" style="display:none;">
+            <div class="kb-progress-bar"><div class="kb-progress-fill" id="kbProgressFill"></div></div>
+            <span id="kbProgressText" class="kb-progress-text">Preparing…</span>
+          </div>
+        </div>
+
         <div class="tools-grid">
           <button id="sentimentBtn" class="tool-card">Sentiment</button>
           <button id="authorAnalyticsBtn" class="tool-card">Top Authors</button>
@@ -102,6 +126,48 @@
               <span class="slider round"></span>
             </label>
           </div>
+
+          <!-- Subscription section -->
+          <div class="settings-section">
+            <h3 class="settings-section-title">Subscription</h3>
+            <div id="subscriptionStatus" class="subscription-status free">
+              <div class="sub-tier-row">
+                <span class="sub-tier-label">Current Plan:</span>
+                <span id="subTierDisplay" class="sub-tier-value">Free</span>
+              </div>
+              <p class="sub-description" id="subDescription">
+                Free plan analyzes your 3 most recent bookmarks using your own Gemini API key.
+              </p>
+            </div>
+
+            <div id="proActivateSection">
+              <label class="setting-label" style="display:block;margin-bottom:6px;">
+                Pro License Key:
+                <input type="text" id="licenseKeyInput" placeholder="XBMA-XXXX-XXXXX-XX"
+                  class="settings-input" style="margin-top:4px;font-family:monospace;">
+              </label>
+              <div style="display:flex;gap:8px;">
+                <button id="activateLicenseBtn" class="action-button small">Activate</button>
+                <button id="deactivateLicenseBtn" class="action-button small secondary" style="display:none;">Deactivate</button>
+              </div>
+              <small id="licenseMsg" class="settings-hint"></small>
+            </div>
+
+            <div class="bmc-upgrade-box" id="bmcUpgradeBox">
+              <p class="bmc-upgrade-text">
+                Upgrade to <strong>Pro</strong> for deeper analysis (50 bookmarks), Gemini 1.5 Pro model, and priority processing.
+              </p>
+              <div class="bmc-price-row">
+                <span class="bmc-price">$3 / month</span>
+                <span class="bmc-price-sep">or</span>
+                <span class="bmc-price">$30 / year</span>
+              </div>
+              <a id="bmcLink" href="https://buymeacoffee.com" target="_blank" class="bmc-btn">
+                ☕ Subscribe on Buy Me a Coffee
+              </a>
+            </div>
+          </div>
+
           <button id="clearStorageBtn" class="action-button danger">Clear All Data</button>
 
           <div class="export-options">
@@ -113,7 +179,7 @@
       </div>
     </main>
     <footer class="footer">
-      <span id="version" class="version-text">v0.12.0 Beta</span>
+      <span id="version" class="version-text">v0.13.0 Beta</span>
       <button class="icon-btn icon-cog" id="settingsBtn" aria-label="Settings"></button>
     </footer>
   </div>

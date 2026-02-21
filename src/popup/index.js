@@ -1,15 +1,21 @@
-// X Bookmarks Analyzer with AI - Popup Script v0.12.1
+// X Bookmarks Analyzer with AI - Popup Script v0.13.0
+const { TierManager } = require('../services/tier-manager.js');
+const { GeminiProvider: GeminiProviderClass, GEMINI_FLASH, GEMINI_PRO } = require('../providers/gemini.js');
+const { generateKnowledgeBase, downloadKnowledgeBase } = require('../exporters/knowledge-base.js');
 
 class PopupController {
   constructor() {
+    this.tierManager = new TierManager();
     this.initializeState();
     this.bindElements();
     this.setupEventListeners();
     this.setupKeyboardShortcuts(); // NEW v0.11.0
-    this.loadSettings().then(() => {
+    this.loadSettings().then(async () => {
+      await this.tierManager.revalidateSavedLicense();
       this.loadLastExtraction();
       this.render();
       this.checkReminders(); // Check reminders on startup
+      this.updateTierUI();
     });
   }
 
@@ -114,7 +120,25 @@ class PopupController {
       // Tabs
       tabBtns: document.querySelectorAll('.tab-btn'),
       tabContents: document.querySelectorAll('.tab-content'),
-      libraryContainer: document.getElementById('library-container')
+      libraryContainer: document.getElementById('library-container'),
+      // Tier & rate-limit UI
+      tierBadge: document.getElementById('tierBadge'),
+      rateLimitText: document.getElementById('rateLimitText'),
+      // Knowledge Base export
+      exportKbBtn: document.getElementById('exportKbBtn'),
+      kbBtnSubtitle: document.getElementById('kbBtnSubtitle'),
+      kbProgress: document.getElementById('kbProgress'),
+      kbProgressFill: document.getElementById('kbProgressFill'),
+      kbProgressText: document.getElementById('kbProgressText'),
+      // Settings – subscription
+      subTierDisplay: document.getElementById('subTierDisplay'),
+      subDescription: document.getElementById('subDescription'),
+      subscriptionStatus: document.getElementById('subscriptionStatus'),
+      licenseKeyInput: document.getElementById('licenseKeyInput'),
+      activateLicenseBtn: document.getElementById('activateLicenseBtn'),
+      deactivateLicenseBtn: document.getElementById('deactivateLicenseBtn'),
+      licenseMsg: document.getElementById('licenseMsg'),
+      bmcUpgradeBox: document.getElementById('bmcUpgradeBox'),
     };
 
     // Tab Event Listeners
@@ -476,6 +500,13 @@ class PopupController {
     this.elements.authorAnalyticsBtn?.addEventListener('click', () => this.showAuthorAnalytics());
     this.elements.hiddenGemsBtn?.addEventListener('click', () => this.showHiddenGems());
 
+    // Knowledge Base export
+    this.elements.exportKbBtn?.addEventListener('click', () => this.exportKnowledgeBase());
+
+    // License activation
+    this.elements.activateLicenseBtn?.addEventListener('click', () => this.handleActivateLicense());
+    this.elements.deactivateLicenseBtn?.addEventListener('click', () => this.handleDeactivateLicense());
+
     // Listen for messages from content script
     chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (msg.type === 'progressUpdate') {
@@ -497,6 +528,9 @@ class PopupController {
     if (this.elements.analyzeAiBtn) this.elements.analyzeAiBtn.disabled = !hasData;
     if (this.elements.exportNotionBtn) this.elements.exportNotionBtn.disabled = !hasData;
     if (this.elements.exportObsidianBtn) this.elements.exportObsidianBtn.disabled = !hasData;
+    // KB export: needs data + Gemini API key
+    const canKb = hasData && this.state.llmProvider === 'gemini' && !!this.state.apiKey;
+    if (this.elements.exportKbBtn) this.elements.exportKbBtn.disabled = !canKb;
   };
   updateProgressBar = () => {
     const { current, total } = this.state.progress;
@@ -1023,11 +1057,10 @@ class PopupController {
     }
   };
 
-  createLLMProvider = () => {
+  createLLMProvider = (modelTier = 'flash') => {
     switch (this.state.llmProvider) {
       case 'gemini':
-        // Assuming GeminiProvider is globally available or imported
-        return new GeminiProvider(this.state.apiKey, this.state.systemPrompt);
+        return new GeminiProviderClass(this.state.apiKey, this.constants, modelTier);
       case 'openai':
         return new OpenAIProvider(this.state.apiKey, this.state.systemPrompt);
       case 'anthropic':
@@ -1037,6 +1070,12 @@ class PopupController {
       default:
         throw new Error('Unknown LLM provider');
     }
+  };
+
+  createGeminiProvider = async () => {
+    const isPro = await this.tierManager.isProUser();
+    const modelTier = isPro ? 'pro' : 'flash';
+    return new GeminiProviderClass(this.state.apiKey, this.constants, modelTier);
   };
 
   analyzeLLMFree = async () => {
@@ -5543,10 +5582,223 @@ Summary (3-5 bullet points):`;
     if (seconds < 86400) return `${Math.floor(seconds / 3600)} hours ago`;
     return `${Math.floor(seconds / 86400)} days ago`;
   };
+
+  // ── Tier UI ────────────────────────────────────────────────────────────────
+
+  updateTierUI = async () => {
+    const isPro = await this.tierManager.isProUser();
+    const remaining = await this.tierManager.getRemainingAnalyses();
+    const bookmarkLimit = await this.tierManager.getBookmarkLimit();
+
+    // Header badge
+    if (this.elements.tierBadge) {
+      this.elements.tierBadge.textContent = isPro ? 'Pro' : 'Free';
+      this.elements.tierBadge.className = `tier-badge ${isPro ? 'tier-pro' : 'tier-free'}`;
+    }
+
+    // Rate limit bar
+    if (this.elements.rateLimitText) {
+      this.elements.rateLimitText.textContent = `${remaining} of 50 analyses remaining today`;
+    }
+
+    // KB button subtitle
+    if (this.elements.kbBtnSubtitle) {
+      const modelLabel = isPro ? 'Gemini 1.5 Pro' : 'Gemini Flash';
+      this.elements.kbBtnSubtitle.textContent =
+        `Analyzes ${bookmarkLimit} bookmarks · ${modelLabel}`;
+    }
+
+    // Settings tab subscription section
+    if (this.elements.subTierDisplay) {
+      this.elements.subTierDisplay.textContent = isPro ? 'Pro ✓' : 'Free';
+    }
+    if (this.elements.subscriptionStatus) {
+      this.elements.subscriptionStatus.className = `subscription-status ${isPro ? 'pro' : 'free'}`;
+    }
+    if (this.elements.subDescription) {
+      this.elements.subDescription.textContent = isPro
+        ? `Pro plan – analyze up to ${bookmarkLimit} bookmarks with Gemini 1.5 Pro. ${remaining}/50 analyses remaining today.`
+        : `Free plan – analyze your 3 most recent bookmarks using your own Gemini Flash API key.`;
+    }
+    if (this.elements.deactivateLicenseBtn) {
+      this.elements.deactivateLicenseBtn.style.display = isPro ? 'inline-block' : 'none';
+    }
+    if (this.elements.bmcUpgradeBox) {
+      this.elements.bmcUpgradeBox.style.display = isPro ? 'none' : 'block';
+    }
+
+    // Refresh export button states
+    this.updateExportButtons();
+  };
+
+  // ── License activation ─────────────────────────────────────────────────────
+
+  handleActivateLicense = async () => {
+    const key = this.elements.licenseKeyInput?.value?.trim();
+    if (!key) {
+      this.showLicenseMsg('Please enter a license key.', 'error');
+      return;
+    }
+
+    if (this.elements.activateLicenseBtn) {
+      this.elements.activateLicenseBtn.disabled = true;
+      this.elements.activateLicenseBtn.textContent = 'Activating…';
+    }
+
+    const result = await this.tierManager.activateLicense(key);
+
+    if (this.elements.activateLicenseBtn) {
+      this.elements.activateLicenseBtn.disabled = false;
+      this.elements.activateLicenseBtn.textContent = 'Activate';
+    }
+
+    this.showLicenseMsg(result.message, result.success ? 'success' : 'error');
+    if (result.success) {
+      if (this.elements.licenseKeyInput) this.elements.licenseKeyInput.value = '';
+      await this.updateTierUI();
+    }
+  };
+
+  handleDeactivateLicense = async () => {
+    await this.tierManager.deactivateLicense();
+    this.showLicenseMsg('License deactivated. Reverted to Free plan.', '');
+    await this.updateTierUI();
+  };
+
+  showLicenseMsg = (msg, type) => {
+    if (!this.elements.licenseMsg) return;
+    this.elements.licenseMsg.textContent = msg;
+    this.elements.licenseMsg.className = `settings-hint${type ? ' ' + type : ''}`;
+  };
+
+  // ── Knowledge Base export ──────────────────────────────────────────────────
+
+  exportKnowledgeBase = async () => {
+    const bookmarks = this.state.lastExtraction;
+    if (!bookmarks || bookmarks.length === 0) {
+      this.updateStatus('No bookmarks to export.');
+      return;
+    }
+
+    if (this.state.llmProvider !== 'gemini' || !this.state.apiKey) {
+      this.updateStatus('Knowledge Base export requires Gemini selected as provider with an API key.');
+      return;
+    }
+
+    // Rate-limit check
+    const { allowed, reason } = await this.tierManager.canAnalyze();
+    if (!allowed) {
+      this.updateStatus(reason);
+      this.showToast(reason, 'warning');
+      return;
+    }
+
+    const bookmarkLimit = await this.tierManager.getBookmarkLimit();
+    const isPro = await this.tierManager.isProUser();
+    const toProcess = bookmarks.slice(0, bookmarkLimit);
+
+    // Disable button, show progress
+    if (this.elements.exportKbBtn) this.elements.exportKbBtn.disabled = true;
+    if (this.elements.kbProgress) this.elements.kbProgress.style.display = 'block';
+
+    const setKbProgress = (pct, text) => {
+      if (this.elements.kbProgressFill) this.elements.kbProgressFill.style.width = `${pct}%`;
+      if (this.elements.kbProgressText) this.elements.kbProgressText.textContent = text;
+    };
+
+    setKbProgress(5, 'Initializing…');
+    this.updateStatus(`Exporting Knowledge Base (${toProcess.length} bookmarks)…`);
+
+    try {
+      const gemini = await this.createGeminiProvider();
+
+      // Step 1: Collection-level analysis (10%)
+      setKbProgress(10, 'Generating collection overview…');
+      let aiAnalysis = this.state.aiAnalysis;
+      if (!aiAnalysis) {
+        try {
+          aiAnalysis = await gemini.analyzeBookmarks(toProcess);
+          this.state.aiAnalysis = aiAnalysis;
+        } catch (e) {
+          console.warn('Collection analysis failed, continuing without it:', e.message);
+        }
+      }
+
+      // Step 2: Per-bookmark analysis + image extraction
+      const deepAnalyses = [];
+      const imageTextsPerBookmark = [];
+      const totalSteps = toProcess.length;
+
+      for (let i = 0; i < toProcess.length; i++) {
+        const bookmark = toProcess[i];
+        const pct = 10 + Math.round(((i + 1) / totalSteps) * 80);
+        setKbProgress(pct, `Analyzing bookmark ${i + 1} of ${totalSteps}…`);
+
+        // Image text extraction
+        let imageTexts = [];
+        if (bookmark.media && bookmark.media.some(m => m.type !== 'video')) {
+          try {
+            imageTexts = await gemini.extractBookmarkImageTexts(bookmark);
+          } catch (e) {
+            console.warn('Image extraction failed for bookmark', i, ':', e.message);
+          }
+        }
+        imageTextsPerBookmark.push(imageTexts);
+
+        // Per-bookmark deep analysis
+        let deepAnalysis = null;
+        try {
+          deepAnalysis = await gemini.analyzeBookmark(bookmark, imageTexts);
+        } catch (e) {
+          console.warn('Deep analysis failed for bookmark', i, ':', e.message);
+        }
+        deepAnalyses.push(deepAnalysis);
+
+        // Increment usage per bookmark analyzed
+        await this.tierManager.incrementUsage(1);
+      }
+
+      // Step 3: Generate and download
+      setKbProgress(95, 'Generating Markdown…');
+      const getCustomTags = (url) => {
+        const meta = this.state.bookmarkMetadata?.[url];
+        return meta?.customTags || [];
+      };
+
+      downloadKnowledgeBase(toProcess, {
+        aiAnalysis,
+        deepAnalyses,
+        imageTextsPerBookmark,
+        getCustomTags
+      });
+
+      setKbProgress(100, 'Done!');
+      this.updateStatus(`Knowledge Base exported with ${toProcess.length} bookmarks.`);
+
+      if (!isPro && bookmarks.length > bookmarkLimit) {
+        this.showToast(
+          `Free plan: exported ${bookmarkLimit} of ${bookmarks.length} bookmarks. Upgrade to Pro for up to 50.`,
+          'info'
+        );
+      }
+
+      // Refresh tier UI (usage counter changed)
+      await this.updateTierUI();
+    } catch (error) {
+      console.error('Knowledge Base export error:', error);
+      this.updateStatus(`Export failed: ${error.message}`);
+      this.showToast(`Export failed: ${error.message}`, 'error');
+    } finally {
+      if (this.elements.exportKbBtn) this.elements.exportKbBtn.disabled = false;
+      setTimeout(() => {
+        if (this.elements.kbProgress) this.elements.kbProgress.style.display = 'none';
+      }, 2000);
+    }
+  };
 }
 
 // Initialize the popup controller when the DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
   new PopupController();
 });
-if (typeof module !== 'undefined' && module.exports) { module.exports = { PopupController, GeminiProvider, LLMProvider, OpenAIProvider, AnthropicProvider, LLMFreeProvider }; }
+if (typeof module !== 'undefined' && module.exports) { module.exports = { PopupController, GeminiProviderClass, LLMProvider, OpenAIProvider, AnthropicProvider, LLMFreeProvider }; }

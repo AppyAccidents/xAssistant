@@ -13,25 +13,25 @@ const commonOptions = {
     logLevel: 'info',
 };
 
-// Build popup.js
+// Build popup.js (output to root – the extension loads directly from root)
 const buildPopup = {
     ...commonOptions,
     entryPoints: [path.resolve(__dirname, 'src/popup/index.js')],
-    outfile: path.resolve(__dirname, 'dist/popup.js'),
+    outfile: path.resolve(__dirname, 'popup.js'),
 };
 
 // Build content-script.js
 const buildContentScript = {
     ...commonOptions,
     entryPoints: [path.resolve(__dirname, 'src/content-script/index.js')],
-    outfile: path.resolve(__dirname, 'dist/content-script.js'),
+    outfile: path.resolve(__dirname, 'content-script.js'),
 };
 
-// Build injected.js (simple copy for now)
+// Build injected.js
 const buildInjected = {
     ...commonOptions,
     entryPoints: [path.resolve(__dirname, 'src/injected.js')],
-    outfile: path.resolve(__dirname, 'dist/injected.js'),
+    outfile: path.resolve(__dirname, 'injected.js'),
 };
 
 async function build() {
