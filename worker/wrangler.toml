@@ -1,0 +1,31 @@
+name = "xbma-api"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+# KV namespace – create with: wrangler kv:namespace create SUBSCRIBERS
+[[kv_namespaces]]
+binding = "SUBSCRIBERS"
+id     = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+
+# Rate-limit KV namespace – create with: wrangler kv:namespace create RATE_LIMITS
+[[kv_namespaces]]
+binding = "RATE_LIMITS"
+id     = "REPLACE_WITH_YOUR_RATE_LIMITS_KV_NAMESPACE_ID"
+
+# Secrets – set with: wrangler secret put <NAME>
+# Required secrets:
+#   GEMINI_PRO_API_KEY   – your Gemini Pro API key (never leaves this worker)
+#   BMC_WEBHOOK_SECRET   – from BMC dashboard → Webhooks → secret
+#   RESEND_API_KEY       – from resend.com for sending activation emails
+#   TOKEN_HMAC_SECRET    – any random 32-char string used to sign tokens
+
+[vars]
+ENVIRONMENT = "production"
+# Public config (not secret)
+FREE_DAILY_LIMIT = "50"
+PRO_DAILY_LIMIT  = "50"
+FREE_BOOKMARK_LIMIT = "3"
+PRO_BOOKMARK_LIMIT  = "50"
+GEMINI_PRO_MODEL = "gemini-2.5-pro-preview-03-25"
+GEMINI_FLASH_MODEL = "gemini-2.0-flash"

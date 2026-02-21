@@ -961,3 +961,16 @@ input:checked+.slider:before {
 .bmc-btn:hover {
   background: #E6860D;
 }
+/* ── Token verify loading state ───────────────────────────────────────────── */
+.action-button.verifying {
+  opacity: 0.7;
+  cursor: wait;
+  pointer-events: none;
+}
+
+/* ── Pro expiry info ──────────────────────────────────────────────────────── */
+.pro-expiry {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}

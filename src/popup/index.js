@@ -1,6 +1,6 @@
-// X Bookmarks Analyzer with AI - Popup Script v0.13.0
-const { TierManager } = require('../services/tier-manager.js');
-const { GeminiProvider: GeminiProviderClass, GEMINI_FLASH, GEMINI_PRO } = require('../providers/gemini.js');
+// X Bookmarks Analyzer with AI - Popup Script v0.13.1
+const { TierManager, WORKER_URL } = require('../services/tier-manager.js');
+const { GeminiProvider: GeminiProviderClass, ProxyGeminiProvider, GEMINI_FLASH, GEMINI_PRO } = require('../providers/gemini.js');
 const { generateKnowledgeBase, downloadKnowledgeBase } = require('../exporters/knowledge-base.js');
 
 class PopupController {
@@ -528,9 +528,16 @@ class PopupController {
     if (this.elements.analyzeAiBtn) this.elements.analyzeAiBtn.disabled = !hasData;
     if (this.elements.exportNotionBtn) this.elements.exportNotionBtn.disabled = !hasData;
     if (this.elements.exportObsidianBtn) this.elements.exportObsidianBtn.disabled = !hasData;
-    // KB export: needs data + Gemini API key
-    const canKb = hasData && this.state.llmProvider === 'gemini' && !!this.state.apiKey;
-    if (this.elements.exportKbBtn) this.elements.exportKbBtn.disabled = !canKb;
+    // KB export: needs data. Pro users go through Worker (no personal key needed).
+    // Free users need Gemini provider + their own API key.
+    if (this.elements.exportKbBtn) {
+      this.tierManager.isProUser().then(isPro => {
+        const canKb = hasData && (isPro || (this.state.llmProvider === 'gemini' && !!this.state.apiKey));
+        this.elements.exportKbBtn.disabled = !canKb;
+      }).catch(() => {
+        this.elements.exportKbBtn.disabled = !hasData;
+      });
+    }
   };
   updateProgressBar = () => {
     const { current, total } = this.state.progress;
@@ -1074,8 +1081,13 @@ class PopupController {
 
   createGeminiProvider = async () => {
     const isPro = await this.tierManager.isProUser();
-    const modelTier = isPro ? 'pro' : 'flash';
-    return new GeminiProviderClass(this.state.apiKey, this.constants, modelTier);
+    if (isPro) {
+      // Pro: route through Worker so the Gemini Pro key never leaves the server
+      const token = await this.tierManager.getToken();
+      return new ProxyGeminiProvider(token, WORKER_URL, this.constants);
+    }
+    // Free: call Gemini Flash directly with the user's own API key
+    return new GeminiProviderClass(this.state.apiKey, this.constants, 'flash');
   };
 
   analyzeLLMFree = async () => {
@@ -5586,9 +5598,21 @@ Summary (3-5 bullet points):`;
   // ── Tier UI ────────────────────────────────────────────────────────────────
 
   updateTierUI = async () => {
-    const isPro = await this.tierManager.isProUser();
-    const remaining = await this.tierManager.getRemainingAnalyses();
-    const bookmarkLimit = await this.tierManager.getBookmarkLimit();
+    const status = await this.tierManager.getStatus();
+    const isPro  = status.valid === true && status.tier === 'pro';
+
+    // For free users use the local usage counter; for pro, use server-reported value
+    let remaining;
+    if (isPro) {
+      remaining = typeof status.remainingToday === 'number'
+        ? status.remainingToday
+        : status.dailyLimit || 50;
+    } else {
+      const used = await this.tierManager.getLocalUsageCount();
+      remaining  = Math.max(0, 50 - used);
+    }
+
+    const bookmarkLimit = isPro ? this.tierManager.PRO_BOOKMARK_LIMIT : this.tierManager.FREE_BOOKMARK_LIMIT;
 
     // Header badge
     if (this.elements.tierBadge) {
@@ -5603,7 +5627,7 @@ Summary (3-5 bullet points):`;
 
     // KB button subtitle
     if (this.elements.kbBtnSubtitle) {
-      const modelLabel = isPro ? 'Gemini 1.5 Pro' : 'Gemini Flash';
+      const modelLabel = isPro ? 'Gemini 2.5 Pro' : 'Gemini 2.0 Flash';
       this.elements.kbBtnSubtitle.textContent =
         `Analyzes ${bookmarkLimit} bookmarks · ${modelLabel}`;
     }
@@ -5616,9 +5640,14 @@ Summary (3-5 bullet points):`;
       this.elements.subscriptionStatus.className = `subscription-status ${isPro ? 'pro' : 'free'}`;
     }
     if (this.elements.subDescription) {
-      this.elements.subDescription.textContent = isPro
-        ? `Pro plan – analyze up to ${bookmarkLimit} bookmarks with Gemini 1.5 Pro. ${remaining}/50 analyses remaining today.`
-        : `Free plan – analyze your 3 most recent bookmarks using your own Gemini Flash API key.`;
+      if (isPro && status.expiresAt) {
+        const expDate = new Date(status.expiresAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+        this.elements.subDescription.textContent =
+          `Pro plan – Gemini 2.5 Pro, ${bookmarkLimit} bookmarks/export. ${remaining}/50 analyses remaining today. Renews ${expDate}.`;
+      } else {
+        this.elements.subDescription.textContent =
+          `Free plan – analyzes your 3 most recent bookmarks with Gemini 2.0 Flash using your own API key.`;
+      }
     }
     if (this.elements.deactivateLicenseBtn) {
       this.elements.deactivateLicenseBtn.style.display = isPro ? 'inline-block' : 'none';
@@ -5634,22 +5663,25 @@ Summary (3-5 bullet points):`;
   // ── License activation ─────────────────────────────────────────────────────
 
   handleActivateLicense = async () => {
-    const key = this.elements.licenseKeyInput?.value?.trim();
-    if (!key) {
-      this.showLicenseMsg('Please enter a license key.', 'error');
+    const rawToken = this.elements.licenseKeyInput?.value?.trim();
+    if (!rawToken) {
+      this.showLicenseMsg('Please enter your activation token.', 'error');
       return;
     }
 
     if (this.elements.activateLicenseBtn) {
       this.elements.activateLicenseBtn.disabled = true;
-      this.elements.activateLicenseBtn.textContent = 'Activating…';
+      this.elements.activateLicenseBtn.classList.add('verifying');
+      this.elements.activateLicenseBtn.textContent = 'Verifying…';
     }
+    this.showLicenseMsg('Contacting verification server…', '');
 
-    const result = await this.tierManager.activateLicense(key);
+    const result = await this.tierManager.activateToken(rawToken);
 
     if (this.elements.activateLicenseBtn) {
       this.elements.activateLicenseBtn.disabled = false;
-      this.elements.activateLicenseBtn.textContent = 'Activate';
+      this.elements.activateLicenseBtn.classList.remove('verifying');
+      this.elements.activateLicenseBtn.textContent = 'Verify & Activate';
     }
 
     this.showLicenseMsg(result.message, result.success ? 'success' : 'error');
@@ -5660,8 +5692,8 @@ Summary (3-5 bullet points):`;
   };
 
   handleDeactivateLicense = async () => {
-    await this.tierManager.deactivateLicense();
-    this.showLicenseMsg('License deactivated. Reverted to Free plan.', '');
+    await this.tierManager.deactivate();
+    this.showLicenseMsg('Token removed. Reverted to Free plan.', '');
     await this.updateTierUI();
   };
 
@@ -5680,21 +5712,24 @@ Summary (3-5 bullet points):`;
       return;
     }
 
-    if (this.state.llmProvider !== 'gemini' || !this.state.apiKey) {
-      this.updateStatus('Knowledge Base export requires Gemini selected as provider with an API key.');
+    // Rate-limit check (free users: local counter; Pro: enforced server-side on each call)
+    const isPro = await this.tierManager.isProUser();
+
+    // Free users need to provide their own Gemini API key; Pro routes through the Worker
+    if (!isPro && (this.state.llmProvider !== 'gemini' || !this.state.apiKey)) {
+      this.updateStatus('Free plan: select Gemini as provider and add your Gemini API key in Settings.');
       return;
     }
-
-    // Rate-limit check
-    const { allowed, reason } = await this.tierManager.canAnalyze();
-    if (!allowed) {
-      this.updateStatus(reason);
-      this.showToast(reason, 'warning');
-      return;
+    if (!isPro) {
+      const { allowed, reason } = await this.tierManager.canAnalyzeFree();
+      if (!allowed) {
+        this.updateStatus(reason);
+        this.showToast(reason, 'warning');
+        return;
+      }
     }
 
     const bookmarkLimit = await this.tierManager.getBookmarkLimit();
-    const isPro = await this.tierManager.isProUser();
     const toProcess = bookmarks.slice(0, bookmarkLimit);
 
     // Disable button, show progress
@@ -5754,8 +5789,10 @@ Summary (3-5 bullet points):`;
         }
         deepAnalyses.push(deepAnalysis);
 
-        // Increment usage per bookmark analyzed
-        await this.tierManager.incrementUsage(1);
+        // Free users: track usage locally for display; Pro: tracked server-side
+        if (!isPro) {
+          await this.tierManager.incrementLocalUsage(1);
+        }
       }
 
       // Step 3: Generate and download

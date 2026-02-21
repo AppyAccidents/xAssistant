@@ -1,8 +1,8 @@
 const { LLMProvider } = require('./base.js');
 
-// Model IDs
-const GEMINI_FLASH = 'gemini-1.5-flash';
-const GEMINI_PRO   = 'gemini-1.5-pro';
+// Model IDs — verify latest at https://aistudio.google.com/app/apikey
+const GEMINI_FLASH = 'gemini-2.0-flash';           // Free tier: user supplies own key
+const GEMINI_PRO   = 'gemini-2.5-pro-preview-03-25'; // Pro tier: routed via backend proxy
 
 const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 
@@ -227,4 +227,145 @@ Provide a rich JSON analysis:
     }
 }
 
-module.exports = { GeminiProvider, GEMINI_FLASH, GEMINI_PRO };
+/**
+ * ProxyGeminiProvider
+ *
+ * Used by Pro subscribers. All Gemini Pro API calls are routed through
+ * the XBMA Cloudflare Worker so the Pro API key never touches the browser.
+ *
+ * The extension sends the subscriber's activation token in X-Extension-Token.
+ * The Worker validates the token, enforces server-side rate limits, and
+ * calls Gemini Pro on the subscriber's behalf.
+ *
+ * Free users continue to use GeminiProvider directly with their own key.
+ */
+class ProxyGeminiProvider extends LLMProvider {
+    /**
+     * @param {string} token      – subscriber's activation token (xbma_...)
+     * @param {string} workerUrl  – base URL of the deployed Cloudflare Worker
+     * @param {Object} constants
+     */
+    constructor(token, workerUrl, constants) {
+        super(constants);
+        this.token     = token;
+        this.workerUrl = workerUrl.replace(/\/$/, ''); // strip trailing slash
+    }
+
+    // ── Internal ─────────────────────────────────────────────────────────────
+
+    async _callWorker(action, payload) {
+        const response = await fetch(`${this.workerUrl}/analyze`, {
+            method:  'POST',
+            headers: {
+                'Content-Type':       'application/json',
+                'X-Extension-Token':  this.token,
+            },
+            body: JSON.stringify({ action, ...payload }),
+        });
+
+        if (response.status === 401) {
+            throw new Error('Pro token invalid or expired. Please re-activate in Settings.');
+        }
+        if (response.status === 429) {
+            const data = await response.json().catch(() => ({}));
+            throw new Error(data.error || 'Daily analysis limit reached. Try again tomorrow.');
+        }
+        if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            throw new Error(data.error || `Worker error: ${response.status}`);
+        }
+
+        const data = await response.json();
+        // Server echoes remaining quota – store for UI display (best-effort)
+        if (typeof data.remainingToday === 'number') {
+            this._lastRemaining = data.remainingToday;
+        }
+        return data.result;
+    }
+
+    // ── Collection-level analysis ────────────────────────────────────────────
+
+    async analyzeBookmarks(bookmarks) {
+        const toSend = bookmarks
+            .filter(b => b.text?.trim())
+            .slice(0, this.constants.AI_ANALYSIS_LIMIT)
+            .map(b => ({ text: b.text, username: b.username }));
+
+        if (toSend.length === 0) throw new Error('No bookmark content to analyze');
+
+        const result = await this._callWorker('analyzeCollection', { bookmarks: toSend });
+        return this.validateAnalysis(result);
+    }
+
+    // ── Per-bookmark deep analysis ────────────────────────────────────────────
+
+    /**
+     * Matches the GeminiProvider.analyzeBookmark() signature.
+     */
+    async analyzeBookmark(bookmark, imageTexts = []) {
+        const toSend = {
+            text:        bookmark.text || '',
+            displayName: bookmark.displayName,
+            username:    bookmark.username,
+            dateTime:    bookmark.dateTime,
+        };
+
+        try {
+            const result = await this._callWorker('analyzeBookmark', {
+                bookmark: toSend,
+                imageTexts,
+            });
+            return {
+                summary:        result.summary       || '',
+                keyInsights:    Array.isArray(result.keyInsights) ? result.keyInsights : [],
+                topics:         Array.isArray(result.topics)      ? result.topics      : [],
+                sentiment:      result.sentiment      || 'neutral',
+                actionableInfo: result.actionableInfo || '',
+                knowledgeValue: result.knowledgeValue || 'medium',
+            };
+        } catch (err) {
+            console.warn('ProxyGemini: analyzeBookmark failed:', err.message);
+            return {
+                summary: bookmark.text?.slice(0, 200) || '',
+                keyInsights: [], topics: [], sentiment: 'neutral',
+                actionableInfo: '', knowledgeValue: 'medium',
+            };
+        }
+    }
+
+    // ── Image text extraction ─────────────────────────────────────────────────
+
+    /**
+     * Sends the image URL to the Worker; the Worker fetches + encodes it
+     * server-side (avoids CORS issues) and calls Gemini Vision.
+     */
+    async extractImageText(imageUrl) {
+        if (!imageUrl) return '';
+        try {
+            const result = await this._callWorker('extractImageText', { imageUrl });
+            return typeof result === 'string' ? result.trim() : '';
+        } catch (err) {
+            console.warn('ProxyGemini: extractImageText failed:', err.message);
+            return '';
+        }
+    }
+
+    /**
+     * Matches GeminiProvider.extractBookmarkImageTexts() signature.
+     */
+    async extractBookmarkImageTexts(bookmark) {
+        const mediaItems = bookmark.media || [];
+        const imageItems = mediaItems.filter(m => m.type !== 'video' && m.url);
+        if (imageItems.length === 0) return [];
+
+        const limited = imageItems.slice(0, 4);
+        const results = await Promise.allSettled(
+            limited.map(m => this.extractImageText(m.url))
+        );
+        return results
+            .filter(r => r.status === 'fulfilled' && r.value)
+            .map(r => r.value);
+    }
+}
+
+module.exports = { GeminiProvider, ProxyGeminiProvider, GEMINI_FLASH, GEMINI_PRO };

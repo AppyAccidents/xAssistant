@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "X Bookmarks Analyzer",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "description": "Complete bookmark management solution for X (Twitter). Features: proactive 'Add to Analyzer' button, author-centric dashboard with topic analysis, media gallery view, AI article summarization, favorites, archives, bulk operations, reading queue, engagement tracking, sentiment analysis, and comprehensive exports to Markdown, CSV, JSON, HTML, Notion, and Obsidian.",
   "action": {
     "default_popup": "popup.html",
@@ -46,7 +46,8 @@
     "https://*.twitter.com/*",
     "https://generativelanguage.googleapis.com/*",
     "https://pbs.twimg.com/*",
-    "https://video.twimg.com/*"
+    "https://video.twimg.com/*",
+    "https://*.workers.dev/*"
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"

@@ -142,20 +142,24 @@
 
             <div id="proActivateSection">
               <label class="setting-label" style="display:block;margin-bottom:6px;">
-                Pro License Key:
-                <input type="text" id="licenseKeyInput" placeholder="XBMA-XXXX-XXXXX-XX"
-                  class="settings-input" style="margin-top:4px;font-family:monospace;">
+                Activation Token:
+                <input type="text" id="licenseKeyInput" placeholder="xbma_…"
+                  class="settings-input" style="margin-top:4px;font-family:monospace;font-size:12px;">
               </label>
+              <small style="display:block;margin-bottom:8px;color:var(--text-secondary);font-size:11px;">
+                You receive this token by email after subscribing. Check your inbox.
+              </small>
               <div style="display:flex;gap:8px;">
-                <button id="activateLicenseBtn" class="action-button small">Activate</button>
-                <button id="deactivateLicenseBtn" class="action-button small secondary" style="display:none;">Deactivate</button>
+                <button id="activateLicenseBtn" class="action-button small">Verify &amp; Activate</button>
+                <button id="deactivateLicenseBtn" class="action-button small secondary" style="display:none;">Remove Token</button>
               </div>
               <small id="licenseMsg" class="settings-hint"></small>
             </div>
 
             <div class="bmc-upgrade-box" id="bmcUpgradeBox">
               <p class="bmc-upgrade-text">
-                Upgrade to <strong>Pro</strong> for deeper analysis (50 bookmarks), Gemini 1.5 Pro model, and priority processing.
+                Upgrade to <strong>Pro</strong> for Gemini 2.5 Pro model, deep per-tweet analysis,
+                image text extraction, and up to 50 bookmarks per export.
               </p>
               <div class="bmc-price-row">
                 <span class="bmc-price">$3 / month</span>

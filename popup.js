@@ -7,211 +7,196 @@
   // src/services/tier-manager.js
   var require_tier_manager = __commonJS({
     "src/services/tier-manager.js"(exports, module) {
-      var STORAGE_KEY = "xbma_tier";
-      var DAILY_LIMIT = 50;
+      var WORKER_URL = "https://xbma-api.YOUR_SUBDOMAIN.workers.dev";
+      var STORAGE_KEY = "xbma_tier_v2";
+      var CACHE_TTL_MS = 23 * 60 * 60 * 1e3;
+      var FREE_DAILY_LIMIT = 50;
       var FREE_BOOKMARK_LIMIT = 3;
       var PRO_BOOKMARK_LIMIT = 50;
-      var KEY_PREFIX = "XBMA";
-      function computeChecksum(key) {
-        const cleaned = key.toUpperCase().replace(/[^A-Z0-9]/g, "");
-        let sum = 0;
-        for (let i = 0; i < cleaned.length; i++) {
-          sum += cleaned.charCodeAt(i);
-        }
-        const value = sum % 1295;
-        return value.toString(36).toUpperCase().padStart(2, "0");
-      }
-      function parseLicenseKey(rawKey) {
-        if (!rawKey || typeof rawKey !== "string") {
-          return { valid: false, error: "No key provided." };
-        }
-        const key = rawKey.trim().toUpperCase();
-        const parts = key.split("-");
-        if (parts.length !== 4) {
-          return { valid: false, error: "Invalid key format. Expected XBMA-YYMM-XXXXX-CC." };
-        }
-        const [prefix, datePart, randomPart, checkPart] = parts;
-        if (prefix !== KEY_PREFIX) {
-          return { valid: false, error: "Invalid key prefix." };
-        }
-        if (!/^[0-9A-Z]{4}$/.test(datePart)) {
-          return { valid: false, error: "Invalid date segment in key." };
-        }
-        if (!/^[0-9A-Z]{5}$/.test(randomPart)) {
-          return { valid: false, error: "Invalid random segment in key." };
-        }
-        if (!/^[0-9A-Z]{2}$/.test(checkPart)) {
-          return { valid: false, error: "Invalid checksum segment in key." };
-        }
-        const bodyForCheck = `${prefix}-${datePart}-${randomPart}`;
-        const expected = computeChecksum(bodyForCheck);
-        if (expected !== checkPart) {
-          return { valid: false, error: "License key checksum mismatch." };
-        }
-        const yymmDecoded = parseInt(datePart, 36);
-        const yy = Math.floor(yymmDecoded / 100);
-        const mm = yymmDecoded % 100;
-        if (mm < 1 || mm > 12) {
-          return { valid: false, error: "Invalid date encoded in key." };
-        }
-        const now = /* @__PURE__ */ new Date();
-        const nowYY = now.getFullYear() % 100;
-        const nowMM = now.getMonth() + 1;
-        const keyDate = yy * 100 + mm;
-        const nowDate = nowYY * 100 + nowMM;
-        const diff = nowDate - keyDate;
-        if (diff > 13 || diff < -1) {
-          return { valid: false, error: "License key has expired or is not yet valid." };
-        }
-        return {
-          valid: true,
-          tier: "pro",
-          expiresYYMM: `${String(yy).padStart(2, "0")}${String(mm).padStart(2, "0")}`,
-          error: null
-        };
-      }
-      function generateLicenseKey(validMonths = 1) {
-        const now = /* @__PURE__ */ new Date();
-        let expireMonth = now.getMonth() + 1 + (validMonths - 1);
-        let expireYear = now.getFullYear() % 100;
-        while (expireMonth > 12) {
-          expireMonth -= 12;
-          expireYear += 1;
-        }
-        const yymmNum = expireYear * 100 + expireMonth;
-        const datePart = yymmNum.toString(36).toUpperCase().padStart(4, "0");
-        const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-        let randomPart = "";
-        for (let i = 0; i < 5; i++) {
-          randomPart += chars[Math.floor(Math.random() * chars.length)];
-        }
-        const bodyForCheck = `${KEY_PREFIX}-${datePart}-${randomPart}`;
-        const checkPart = computeChecksum(bodyForCheck);
-        return `${KEY_PREFIX}-${datePart}-${randomPart}-${checkPart}`;
-      }
       var TierManager = class {
         constructor() {
-          this.DAILY_LIMIT = DAILY_LIMIT;
           this.FREE_BOOKMARK_LIMIT = FREE_BOOKMARK_LIMIT;
           this.PRO_BOOKMARK_LIMIT = PRO_BOOKMARK_LIMIT;
+          this.FREE_DAILY_LIMIT = FREE_DAILY_LIMIT;
+          this.WORKER_URL = WORKER_URL;
         }
-        // ─── Storage helpers ─────────────────────────────────────────────────────
+        // ── Storage helpers ────────────────────────────────────────────────────────
         async _load() {
           const raw = await chrome.storage.local.get([STORAGE_KEY]);
           return raw[STORAGE_KEY] || {
-            tier: "free",
-            licenseKey: null,
-            licenseValidated: false,
-            usageDate: null,
-            // 'YYYY-MM-DD'
-            usageCount: 0
+            token: null,
+            verifiedAt: null,
+            cachedResponse: null,
+            localUsageDate: null,
+            localUsageCount: 0
           };
         }
         async _save(data) {
           await chrome.storage.local.set({ [STORAGE_KEY]: data });
         }
-        // ─── Date helpers ─────────────────────────────────────────────────────────
         _todayStr() {
           return (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
         }
-        // ─── Core API ─────────────────────────────────────────────────────────────
-        /**
-         * Load current state, resetting daily usage if the date has changed.
-         */
-        async getState() {
+        // ── Token management ───────────────────────────────────────────────────────
+        async getToken() {
           const state = await this._load();
-          const today = this._todayStr();
-          if (state.usageDate !== today) {
-            state.usageDate = today;
-            state.usageCount = 0;
-            await this._save(state);
-          }
-          return state;
+          return state.token || null;
         }
+        async saveToken(token) {
+          const state = await this._load();
+          state.token = token;
+          state.verifiedAt = null;
+          state.cachedResponse = null;
+          await this._save(state);
+        }
+        async clearToken() {
+          const state = await this._load();
+          state.token = null;
+          state.verifiedAt = null;
+          state.cachedResponse = null;
+          await this._save(state);
+        }
+        // ── Verification ───────────────────────────────────────────────────────────
+        /**
+         * Verify the stored token against the Worker.
+         * Uses cached result if < 23 hours old.
+         * @param {boolean} [forceRefresh=false]
+         * @returns {{ valid: boolean, tier: string, expiresAt?: string,
+         *             bookmarkLimit: number, dailyLimit: number, remainingToday: number,
+         *             reason?: string }}
+         */
+        async verifyToken(forceRefresh = false) {
+          var _a, _b;
+          const state = await this._load();
+          if (!state.token) {
+            return this._freeStatus();
+          }
+          if (!forceRefresh && state.verifiedAt && ((_a = state.cachedResponse) == null ? void 0 : _a.valid) && Date.now() - state.verifiedAt < CACHE_TTL_MS) {
+            return state.cachedResponse;
+          }
+          try {
+            const response = await fetch(`${WORKER_URL}/verify`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ token: state.token })
+            });
+            const data = await response.json();
+            if (data.valid) {
+              state.verifiedAt = Date.now();
+              state.cachedResponse = data;
+              await this._save(state);
+              return data;
+            } else {
+              state.cachedResponse = data;
+              await this._save(state);
+              return data;
+            }
+          } catch (err) {
+            console.warn("TierManager: /verify network error:", err.message);
+            if ((_b = state.cachedResponse) == null ? void 0 : _b.valid) {
+              return { ...state.cachedResponse, _fromCache: true };
+            }
+            return this._freeStatus();
+          }
+        }
+        _freeStatus() {
+          return {
+            valid: false,
+            tier: "free",
+            bookmarkLimit: FREE_BOOKMARK_LIMIT,
+            dailyLimit: FREE_DAILY_LIMIT,
+            remainingToday: FREE_DAILY_LIMIT
+          };
+        }
+        // ── Convenience accessors ──────────────────────────────────────────────────
         async isProUser() {
-          const state = await this.getState();
-          return state.tier === "pro" && state.licenseValidated;
+          const status = await this.verifyToken();
+          return status.valid === true && status.tier === "pro";
         }
         async getBookmarkLimit() {
           return await this.isProUser() ? PRO_BOOKMARK_LIMIT : FREE_BOOKMARK_LIMIT;
         }
-        async getRemainingAnalyses() {
-          const state = await this.getState();
-          return Math.max(0, DAILY_LIMIT - state.usageCount);
+        async getStatus() {
+          return this.verifyToken();
         }
-        async getUsageToday() {
-          const state = await this.getState();
-          return state.usageCount;
+        // ── Local display counter (free users only) ────────────────────────────────
+        async getLocalUsageCount() {
+          const state = await this._load();
+          const today = this._todayStr();
+          if (state.localUsageDate !== today)
+            return 0;
+          return state.localUsageCount || 0;
         }
-        /**
-         * Check whether the user can run another analysis.
-         * Returns { allowed, reason }.
-         */
-        async canAnalyze() {
-          const state = await this.getState();
-          if (state.usageCount >= DAILY_LIMIT) {
-            return {
-              allowed: false,
-              reason: `Daily limit of ${DAILY_LIMIT} analyses reached. Resets at midnight.`
-            };
+        async incrementLocalUsage(count = 1) {
+          const state = await this._load();
+          const today = this._todayStr();
+          if (state.localUsageDate !== today) {
+            state.localUsageDate = today;
+            state.localUsageCount = 0;
+          }
+          state.localUsageCount = Math.min(FREE_DAILY_LIMIT, (state.localUsageCount || 0) + count);
+          await this._save(state);
+          return state.localUsageCount;
+        }
+        async canAnalyzeFree() {
+          const used = await this.getLocalUsageCount();
+          if (used >= FREE_DAILY_LIMIT) {
+            return { allowed: false, reason: `Daily limit of ${FREE_DAILY_LIMIT} reached. Resets at midnight.` };
           }
           return { allowed: true, reason: null };
         }
+        // ── Activation / deactivation (UI entry points) ────────────────────────────
         /**
-         * Increment daily usage counter by `count` (default 1).
+         * Validate and save a new activation token.
+         * Returns { success, message, status }.
+         * @param {string} rawToken
          */
-        async incrementUsage(count = 1) {
-          const state = await this.getState();
-          state.usageCount = Math.min(DAILY_LIMIT, state.usageCount + count);
-          await this._save(state);
-          return state.usageCount;
-        }
-        // ─── License management ───────────────────────────────────────────────────
-        /**
-         * Validate and activate a BuyMeACoffee license key.
-         * Returns { success, message }.
-         */
-        async activateLicense(rawKey) {
-          const parsed = parseLicenseKey(rawKey);
-          if (!parsed.valid) {
-            return { success: false, message: parsed.error };
+        async activateToken(rawToken) {
+          const token = (rawToken || "").trim();
+          if (!token) {
+            return { success: false, message: "Please enter your activation token." };
           }
-          const state = await this.getState();
-          state.tier = "pro";
-          state.licenseKey = rawKey.trim().toUpperCase();
-          state.licenseValidated = true;
-          await this._save(state);
-          return {
-            success: true,
-            message: `Pro activated! License valid through 20${parsed.expiresYYMM.slice(0, 2)}-${parsed.expiresYYMM.slice(2)}.`
-          };
+          if (!token.startsWith("xbma_")) {
+            return { success: false, message: 'Invalid token format. Tokens start with "xbma_".' };
+          }
+          await this.saveToken(token);
+          const status = await this.verifyToken(true);
+          if (status.valid) {
+            const expires = status.expiresAt ? new Date(status.expiresAt).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }) : "see subscription page";
+            return {
+              success: true,
+              message: `Pro activated! Access valid until ${expires}.`,
+              status
+            };
+          } else {
+            await this.clearToken();
+            return {
+              success: false,
+              message: status.reason || "Token verification failed. Please check your token and try again."
+            };
+          }
         }
-        /**
-         * Deactivate current license (revert to free).
-         */
-        async deactivateLicense() {
-          const state = await this.getState();
-          state.tier = "free";
-          state.licenseKey = null;
-          state.licenseValidated = false;
-          await this._save(state);
+        async deactivate() {
+          await this.clearToken();
         }
+        // ── On-startup re-validation ───────────────────────────────────────────────
         /**
-         * Re-validate saved license on every load (catches expired keys).
+         * Called once on popup open. Re-validates cached token if it's stale.
+         * Does NOT block startup – runs in background.
          */
         async revalidateSavedLicense() {
-          const state = await this.getState();
-          if (!state.licenseKey)
+          const state = await this._load();
+          if (!state.token)
             return;
-          const parsed = parseLicenseKey(state.licenseKey);
-          if (!parsed.valid) {
-            state.tier = "free";
-            state.licenseValidated = false;
-            await this._save(state);
+          const age = state.verifiedAt ? Date.now() - state.verifiedAt : Infinity;
+          if (age > CACHE_TTL_MS) {
+            this.verifyToken(true).catch(
+              (err) => console.warn("Background re-verify failed:", err.message)
+            );
           }
         }
       };
-      module.exports = { TierManager, parseLicenseKey, generateLicenseKey, computeChecksum };
+      module.exports = { TierManager, WORKER_URL };
     }
   });
 
@@ -305,8 +290,8 @@
   var require_gemini = __commonJS({
     "src/providers/gemini.js"(exports, module) {
       var { LLMProvider } = require_base();
-      var GEMINI_FLASH = "gemini-1.5-flash";
-      var GEMINI_PRO = "gemini-1.5-pro";
+      var GEMINI_FLASH = "gemini-2.0-flash";
+      var GEMINI_PRO = "gemini-2.5-pro-preview-03-25";
       var BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models";
       var GeminiProvider = class extends LLMProvider {
         /**
@@ -495,7 +480,124 @@ Provide a rich JSON analysis:
           return results.filter((r) => r.status === "fulfilled" && r.value).map((r) => r.value);
         }
       };
-      module.exports = { GeminiProvider, GEMINI_FLASH, GEMINI_PRO };
+      var ProxyGeminiProvider = class extends LLMProvider {
+        /**
+         * @param {string} token      – subscriber's activation token (xbma_...)
+         * @param {string} workerUrl  – base URL of the deployed Cloudflare Worker
+         * @param {Object} constants
+         */
+        constructor(token, workerUrl, constants) {
+          super(constants);
+          this.token = token;
+          this.workerUrl = workerUrl.replace(/\/$/, "");
+        }
+        // ── Internal ─────────────────────────────────────────────────────────────
+        async _callWorker(action, payload) {
+          const response = await fetch(`${this.workerUrl}/analyze`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Extension-Token": this.token
+            },
+            body: JSON.stringify({ action, ...payload })
+          });
+          if (response.status === 401) {
+            throw new Error("Pro token invalid or expired. Please re-activate in Settings.");
+          }
+          if (response.status === 429) {
+            const data2 = await response.json().catch(() => ({}));
+            throw new Error(data2.error || "Daily analysis limit reached. Try again tomorrow.");
+          }
+          if (!response.ok) {
+            const data2 = await response.json().catch(() => ({}));
+            throw new Error(data2.error || `Worker error: ${response.status}`);
+          }
+          const data = await response.json();
+          if (typeof data.remainingToday === "number") {
+            this._lastRemaining = data.remainingToday;
+          }
+          return data.result;
+        }
+        // ── Collection-level analysis ────────────────────────────────────────────
+        async analyzeBookmarks(bookmarks) {
+          const toSend = bookmarks.filter((b) => {
+            var _a;
+            return (_a = b.text) == null ? void 0 : _a.trim();
+          }).slice(0, this.constants.AI_ANALYSIS_LIMIT).map((b) => ({ text: b.text, username: b.username }));
+          if (toSend.length === 0)
+            throw new Error("No bookmark content to analyze");
+          const result = await this._callWorker("analyzeCollection", { bookmarks: toSend });
+          return this.validateAnalysis(result);
+        }
+        // ── Per-bookmark deep analysis ────────────────────────────────────────────
+        /**
+         * Matches the GeminiProvider.analyzeBookmark() signature.
+         */
+        async analyzeBookmark(bookmark, imageTexts = []) {
+          var _a;
+          const toSend = {
+            text: bookmark.text || "",
+            displayName: bookmark.displayName,
+            username: bookmark.username,
+            dateTime: bookmark.dateTime
+          };
+          try {
+            const result = await this._callWorker("analyzeBookmark", {
+              bookmark: toSend,
+              imageTexts
+            });
+            return {
+              summary: result.summary || "",
+              keyInsights: Array.isArray(result.keyInsights) ? result.keyInsights : [],
+              topics: Array.isArray(result.topics) ? result.topics : [],
+              sentiment: result.sentiment || "neutral",
+              actionableInfo: result.actionableInfo || "",
+              knowledgeValue: result.knowledgeValue || "medium"
+            };
+          } catch (err) {
+            console.warn("ProxyGemini: analyzeBookmark failed:", err.message);
+            return {
+              summary: ((_a = bookmark.text) == null ? void 0 : _a.slice(0, 200)) || "",
+              keyInsights: [],
+              topics: [],
+              sentiment: "neutral",
+              actionableInfo: "",
+              knowledgeValue: "medium"
+            };
+          }
+        }
+        // ── Image text extraction ─────────────────────────────────────────────────
+        /**
+         * Sends the image URL to the Worker; the Worker fetches + encodes it
+         * server-side (avoids CORS issues) and calls Gemini Vision.
+         */
+        async extractImageText(imageUrl) {
+          if (!imageUrl)
+            return "";
+          try {
+            const result = await this._callWorker("extractImageText", { imageUrl });
+            return typeof result === "string" ? result.trim() : "";
+          } catch (err) {
+            console.warn("ProxyGemini: extractImageText failed:", err.message);
+            return "";
+          }
+        }
+        /**
+         * Matches GeminiProvider.extractBookmarkImageTexts() signature.
+         */
+        async extractBookmarkImageTexts(bookmark) {
+          const mediaItems = bookmark.media || [];
+          const imageItems = mediaItems.filter((m) => m.type !== "video" && m.url);
+          if (imageItems.length === 0)
+            return [];
+          const limited = imageItems.slice(0, 4);
+          const results = await Promise.allSettled(
+            limited.map((m) => this.extractImageText(m.url))
+          );
+          return results.filter((r) => r.status === "fulfilled" && r.value).map((r) => r.value);
+        }
+      };
+      module.exports = { GeminiProvider, ProxyGeminiProvider, GEMINI_FLASH, GEMINI_PRO };
     }
   });
 
@@ -720,8 +822,8 @@ ${sanitize(articleSummary)}
   // src/popup/index.js
   var require_popup = __commonJS({
     "src/popup/index.js"(exports, module) {
-      var { TierManager } = require_tier_manager();
-      var { GeminiProvider: GeminiProviderClass, GEMINI_FLASH, GEMINI_PRO } = require_gemini();
+      var { TierManager, WORKER_URL } = require_tier_manager();
+      var { GeminiProvider: GeminiProviderClass, ProxyGeminiProvider, GEMINI_FLASH, GEMINI_PRO } = require_gemini();
       var { generateKnowledgeBase, downloadKnowledgeBase } = require_knowledge_base();
       var PopupController = class {
         constructor() {
@@ -1179,9 +1281,14 @@ ${sanitize(articleSummary)}
             this.elements.exportNotionBtn.disabled = !hasData;
           if (this.elements.exportObsidianBtn)
             this.elements.exportObsidianBtn.disabled = !hasData;
-          const canKb = hasData && this.state.llmProvider === "gemini" && !!this.state.apiKey;
-          if (this.elements.exportKbBtn)
-            this.elements.exportKbBtn.disabled = !canKb;
+          if (this.elements.exportKbBtn) {
+            this.tierManager.isProUser().then((isPro) => {
+              const canKb = hasData && (isPro || this.state.llmProvider === "gemini" && !!this.state.apiKey);
+              this.elements.exportKbBtn.disabled = !canKb;
+            }).catch(() => {
+              this.elements.exportKbBtn.disabled = !hasData;
+            });
+          }
         };
         updateProgressBar = () => {
           const { current, total } = this.state.progress;
@@ -1626,8 +1733,11 @@ ${sanitize(articleSummary)}
         };
         createGeminiProvider = async () => {
           const isPro = await this.tierManager.isProUser();
-          const modelTier = isPro ? "pro" : "flash";
-          return new GeminiProviderClass(this.state.apiKey, this.constants, modelTier);
+          if (isPro) {
+            const token = await this.tierManager.getToken();
+            return new ProxyGeminiProvider(token, WORKER_URL, this.constants);
+          }
+          return new GeminiProviderClass(this.state.apiKey, this.constants, "flash");
         };
         analyzeLLMFree = async () => {
           if (this.elements.analyzeAiBtn) {
@@ -5381,9 +5491,16 @@ Summary (3-5 bullet points):`;
         };
         // ── Tier UI ────────────────────────────────────────────────────────────────
         updateTierUI = async () => {
-          const isPro = await this.tierManager.isProUser();
-          const remaining = await this.tierManager.getRemainingAnalyses();
-          const bookmarkLimit = await this.tierManager.getBookmarkLimit();
+          const status = await this.tierManager.getStatus();
+          const isPro = status.valid === true && status.tier === "pro";
+          let remaining;
+          if (isPro) {
+            remaining = typeof status.remainingToday === "number" ? status.remainingToday : status.dailyLimit || 50;
+          } else {
+            const used = await this.tierManager.getLocalUsageCount();
+            remaining = Math.max(0, 50 - used);
+          }
+          const bookmarkLimit = isPro ? this.tierManager.PRO_BOOKMARK_LIMIT : this.tierManager.FREE_BOOKMARK_LIMIT;
           if (this.elements.tierBadge) {
             this.elements.tierBadge.textContent = isPro ? "Pro" : "Free";
             this.elements.tierBadge.className = `tier-badge ${isPro ? "tier-pro" : "tier-free"}`;
@@ -5392,7 +5509,7 @@ Summary (3-5 bullet points):`;
             this.elements.rateLimitText.textContent = `${remaining} of 50 analyses remaining today`;
           }
           if (this.elements.kbBtnSubtitle) {
-            const modelLabel = isPro ? "Gemini 1.5 Pro" : "Gemini Flash";
+            const modelLabel = isPro ? "Gemini 2.5 Pro" : "Gemini 2.0 Flash";
             this.elements.kbBtnSubtitle.textContent = `Analyzes ${bookmarkLimit} bookmarks \xB7 ${modelLabel}`;
           }
           if (this.elements.subTierDisplay) {
@@ -5402,7 +5519,12 @@ Summary (3-5 bullet points):`;
             this.elements.subscriptionStatus.className = `subscription-status ${isPro ? "pro" : "free"}`;
           }
           if (this.elements.subDescription) {
-            this.elements.subDescription.textContent = isPro ? `Pro plan \u2013 analyze up to ${bookmarkLimit} bookmarks with Gemini 1.5 Pro. ${remaining}/50 analyses remaining today.` : `Free plan \u2013 analyze your 3 most recent bookmarks using your own Gemini Flash API key.`;
+            if (isPro && status.expiresAt) {
+              const expDate = new Date(status.expiresAt).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+              this.elements.subDescription.textContent = `Pro plan \u2013 Gemini 2.5 Pro, ${bookmarkLimit} bookmarks/export. ${remaining}/50 analyses remaining today. Renews ${expDate}.`;
+            } else {
+              this.elements.subDescription.textContent = `Free plan \u2013 analyzes your 3 most recent bookmarks with Gemini 2.0 Flash using your own API key.`;
+            }
           }
           if (this.elements.deactivateLicenseBtn) {
             this.elements.deactivateLicenseBtn.style.display = isPro ? "inline-block" : "none";
@@ -5415,19 +5537,22 @@ Summary (3-5 bullet points):`;
         // ── License activation ─────────────────────────────────────────────────────
         handleActivateLicense = async () => {
           var _a, _b;
-          const key = (_b = (_a = this.elements.licenseKeyInput) == null ? void 0 : _a.value) == null ? void 0 : _b.trim();
-          if (!key) {
-            this.showLicenseMsg("Please enter a license key.", "error");
+          const rawToken = (_b = (_a = this.elements.licenseKeyInput) == null ? void 0 : _a.value) == null ? void 0 : _b.trim();
+          if (!rawToken) {
+            this.showLicenseMsg("Please enter your activation token.", "error");
             return;
           }
           if (this.elements.activateLicenseBtn) {
             this.elements.activateLicenseBtn.disabled = true;
-            this.elements.activateLicenseBtn.textContent = "Activating\u2026";
+            this.elements.activateLicenseBtn.classList.add("verifying");
+            this.elements.activateLicenseBtn.textContent = "Verifying\u2026";
           }
-          const result = await this.tierManager.activateLicense(key);
+          this.showLicenseMsg("Contacting verification server\u2026", "");
+          const result = await this.tierManager.activateToken(rawToken);
           if (this.elements.activateLicenseBtn) {
             this.elements.activateLicenseBtn.disabled = false;
-            this.elements.activateLicenseBtn.textContent = "Activate";
+            this.elements.activateLicenseBtn.classList.remove("verifying");
+            this.elements.activateLicenseBtn.textContent = "Verify & Activate";
           }
           this.showLicenseMsg(result.message, result.success ? "success" : "error");
           if (result.success) {
@@ -5437,8 +5562,8 @@ Summary (3-5 bullet points):`;
           }
         };
         handleDeactivateLicense = async () => {
-          await this.tierManager.deactivateLicense();
-          this.showLicenseMsg("License deactivated. Reverted to Free plan.", "");
+          await this.tierManager.deactivate();
+          this.showLicenseMsg("Token removed. Reverted to Free plan.", "");
           await this.updateTierUI();
         };
         showLicenseMsg = (msg, type) => {
@@ -5454,18 +5579,20 @@ Summary (3-5 bullet points):`;
             this.updateStatus("No bookmarks to export.");
             return;
           }
-          if (this.state.llmProvider !== "gemini" || !this.state.apiKey) {
-            this.updateStatus("Knowledge Base export requires Gemini selected as provider with an API key.");
+          const isPro = await this.tierManager.isProUser();
+          if (!isPro && (this.state.llmProvider !== "gemini" || !this.state.apiKey)) {
+            this.updateStatus("Free plan: select Gemini as provider and add your Gemini API key in Settings.");
             return;
           }
-          const { allowed, reason } = await this.tierManager.canAnalyze();
-          if (!allowed) {
-            this.updateStatus(reason);
-            this.showToast(reason, "warning");
-            return;
+          if (!isPro) {
+            const { allowed, reason } = await this.tierManager.canAnalyzeFree();
+            if (!allowed) {
+              this.updateStatus(reason);
+              this.showToast(reason, "warning");
+              return;
+            }
           }
           const bookmarkLimit = await this.tierManager.getBookmarkLimit();
-          const isPro = await this.tierManager.isProUser();
           const toProcess = bookmarks.slice(0, bookmarkLimit);
           if (this.elements.exportKbBtn)
             this.elements.exportKbBtn.disabled = true;
@@ -5514,7 +5641,9 @@ Summary (3-5 bullet points):`;
                 console.warn("Deep analysis failed for bookmark", i, ":", e.message);
               }
               deepAnalyses.push(deepAnalysis);
-              await this.tierManager.incrementUsage(1);
+              if (!isPro) {
+                await this.tierManager.incrementLocalUsage(1);
+              }
             }
             setKbProgress(95, "Generating Markdown\u2026");
             const getCustomTags = (url) => {
