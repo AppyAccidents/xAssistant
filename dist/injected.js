@@ -8,51 +8,57 @@
   var require_injected = __commonJS({
     "src/injected.js"() {
       (function() {
-        console.log("[X Interceptor] Initializing network interceptor...");
-        const dispatchData = (url, responseBody) => {
+        const MATCHERS = ["bookmarks", "likes"];
+        function shouldCapture(url) {
+          if (!url)
+            return false;
+          const normalized = String(url).toLowerCase();
+          return MATCHERS.some((token) => normalized.includes(token));
+        }
+        function dispatchPayload(url, body) {
+          if (!shouldCapture(url))
+            return;
           try {
-            if (!url.includes("Bookmarks"))
-              return;
-            const data = JSON.parse(responseBody);
-            window.dispatchEvent(new CustomEvent("x-bookmarks-response", {
+            const parsed = JSON.parse(body);
+            window.dispatchEvent(new CustomEvent("x-assistant-network", {
               detail: {
                 url,
-                data,
-                timestamp: Date.now()
+                payload: parsed,
+                capturedAt: Date.now()
               }
             }));
-          } catch (e) {
+          } catch (error) {
           }
-        };
+        }
         const XHR = XMLHttpRequest.prototype;
-        const open = XHR.open;
-        const send = XHR.send;
-        XHR.open = function(method, url) {
-          this._url = url;
-          return open.apply(this, arguments);
+        const nativeOpen = XHR.open;
+        const nativeSend = XHR.send;
+        XHR.open = function open(method, url) {
+          this._xaUrl = url;
+          return nativeOpen.apply(this, arguments);
         };
-        XHR.send = function(postData) {
-          this.addEventListener("load", function() {
-            if (this._url && (this._url.includes("Bookmarks") || this._url.includes("bookmarks"))) {
-              dispatchData(this._url, this.responseText);
+        XHR.send = function send() {
+          this.addEventListener("load", function onLoad() {
+            if (this._xaUrl && shouldCapture(this._xaUrl)) {
+              dispatchPayload(this._xaUrl, this.responseText);
             }
           });
-          return send.apply(this, arguments);
+          return nativeSend.apply(this, arguments);
         };
-        const originalFetch = window.fetch;
-        window.fetch = async function(...args) {
-          const response = await originalFetch.apply(this, args);
-          const clone = response.clone();
-          const url = clone.url;
-          if (url && (url.includes("Bookmarks") || url.includes("bookmarks"))) {
-            clone.text().then((body) => {
-              dispatchData(url, body);
-            }).catch(() => {
-            });
+        const nativeFetch = window.fetch;
+        window.fetch = async function patchedFetch(...args) {
+          const response = await nativeFetch.apply(this, args);
+          try {
+            const clone = response.clone();
+            const url = clone.url || args[0]?.toString() || "";
+            if (shouldCapture(url)) {
+              clone.text().then((body) => dispatchPayload(url, body)).catch(() => {
+              });
+            }
+          } catch (error) {
           }
           return response;
         };
-        console.log("[X Interceptor] Interceptor active.");
       })();
     }
   });

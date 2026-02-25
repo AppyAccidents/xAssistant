@@ -1,74 +1,147 @@
-const { PopupController, LLMFreeProvider, GeminiProvider } = require('./popup.js');
+const { PopupApp, normalizeUsername } = require('./src/popup/index.js');
 
-// Mock helpers
-const mockStorage = (data = {}) => {
-    chrome.storage.local.get.mockImplementation((keys) => {
-        if (Array.isArray(keys)) {
-            const result = {};
-            keys.forEach(k => result[k] = data[k]);
-            return Promise.resolve(result);
-        }
-        return Promise.resolve({ [keys]: data[keys] });
-    });
-    chrome.storage.local.set.mockResolvedValue();
-};
-
-describe('PopupController Implementation', () => {
-    let controller;
-
-    beforeEach(() => {
-        jest.clearAllMocks();
-        document.body.innerHTML = `
-      <div id="status-bar"></div>
-      <button id="analyzeAiBtn">Analyze Bookmarks</button>
-      <div id="ai-results"></div>
-      <select id="providerSelect">
-        <option value="none">None</option>
-        <option value="gemini">Gemini</option>
+function setupDom() {
+  document.body.innerHTML = `
+    <main id="popupRoot">
+      <p id="statusText"></p>
+      <progress id="progressBar" value="0" max="100"></progress>
+      <span id="progressLabel"></span>
+      <button id="extractBookmarksBtn"></button>
+      <button id="extractLikesBtn"></button>
+      <button id="extractBothBtn"></button>
+      <input id="usernameInput" />
+      <select id="exportFormat">
+        <option value="md">MD</option>
+        <option value="csv">CSV</option>
+        <option value="txt">TXT</option>
+        <option value="json">JSON</option>
       </select>
-      <input id="apiKeyInput" value="" />
-      <div id="settings-dialog"></div>
-    `;
+      <button id="exportBtn"></button>
+    </main>
+  `;
+}
 
-        mockStorage({
-            settings: { darkMode: false },
-            apiKey: 'test-key',
-            llmProvider: 'gemini'
-        });
+describe('PopupApp minimal flow', () => {
+  beforeEach(() => {
+    setupDom();
+
+    chrome.runtime.sendMessage.mockImplementation((message, callback) => {
+      if (message.type === 'XA_GET_SETTINGS') {
+        callback({ success: true, settings: { username: 'user' } });
+        return;
+      }
+
+      if (message.type === 'DATA_QUERY') {
+        callback({ success: true, records: [], total: 2 });
+        return;
+      }
+
+      if (message.type === 'XA_SAVE_SETTINGS') {
+        callback({ success: true, settings: { username: message.payload.username } });
+        return;
+      }
+
+      if (message.type === 'XA_START_EXTRACTION') {
+        callback({ success: true, totalCount: 42, runId: 'run-1', durationMs: 1000 });
+        return;
+      }
+
+      callback({ success: true });
+    });
+  });
+
+  test('loads username and sets ready status', async () => {
+    new PopupApp();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(document.getElementById('usernameInput').value).toBe('@user');
+    expect(document.getElementById('statusText').textContent).toContain('Ready');
+  });
+
+  test('keeps only required controls in popup contract', async () => {
+    new PopupApp();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const requiredIds = [
+      'extractBookmarksBtn',
+      'extractLikesBtn',
+      'extractBothBtn',
+      'usernameInput',
+      'exportFormat',
+      'exportBtn',
+      'statusText',
+      'progressBar',
+      'progressLabel'
+    ];
+
+    requiredIds.forEach((id) => {
+      expect(document.getElementById(id)).toBeTruthy();
     });
 
-    test('should initialize with settings from storage', async () => {
-        controller = new PopupController();
+    expect(document.getElementById('scopeFilter')).toBeNull();
+    expect(document.getElementById('searchInput')).toBeNull();
+    expect(document.getElementById('analyzeBtn')).toBeNull();
+    expect(document.getElementById('providerSelect')).toBeNull();
+    expect(document.getElementById('saveSettingsBtn')).toBeNull();
+  });
 
-        // Wait for the async loadSettings to complete
-        // We can't await the constructor, but we can await a promise if we exposed one.
-        // Since we didn't, we wait a tick or spy on storage.
-        await new Promise(resolve => setTimeout(resolve, 0));
+  test('rejects likes extraction without username', async () => {
+    const app = new PopupApp();
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
-        expect(chrome.storage.local.get).toHaveBeenCalled();
-        expect(controller.state.apiKey).toBe('test-key');
-        expect(controller.state.llmProvider).toBe('gemini');
+    chrome.runtime.sendMessage.mockClear();
+    document.getElementById('usernameInput').value = '';
+
+    await app.startExtraction('likes');
+
+    const startCalls = chrome.runtime.sendMessage.mock.calls.filter(
+      ([message]) => message.type === 'XA_START_EXTRACTION'
+    );
+
+    expect(startCalls).toHaveLength(0);
+    expect(document.getElementById('statusText').textContent).toContain('Enter @username');
+  });
+
+  test('sends extraction request with normalized username', async () => {
+    const app = new PopupApp();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    chrome.runtime.sendMessage.mockClear();
+    document.getElementById('usernameInput').value = '@tester';
+
+    await app.startExtraction('all');
+
+    const startCall = chrome.runtime.sendMessage.mock.calls.find(
+      ([message]) => message.type === 'XA_START_EXTRACTION'
+    );
+
+    expect(startCall).toBeTruthy();
+    expect(startCall[0].payload).toEqual({
+      scope: 'all',
+      mode: 'full',
+      username: 'tester'
+    });
+  });
+
+  test('handles extraction progress relay', async () => {
+    const app = new PopupApp();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    app.handleRuntimeEvent({
+      type: 'EXTRACTION_PROGRESS',
+      capturedCount: 20,
+      scannedCount: 40,
+      status: 'Scanning...'
     });
 
-    test('validateApiKey should correctly validate Gemini keys', () => {
-        controller = new PopupController();
+    expect(document.getElementById('statusText').textContent).toContain('Scanning');
+    expect(document.getElementById('progressBar').value).toBeGreaterThan(0);
+    expect(document.getElementById('progressLabel').textContent).toContain('%');
+  });
+});
 
-        const valid = controller.validateApiKey('AIzaSyD-valid-key-longer-than-20-chars', 'gemini');
-        expect(valid.valid).toBe(true);
-
-        const invalidPrefix = controller.validateApiKey('sk-invalid-key-longer-than-20-chars', 'gemini');
-        expect(invalidPrefix.valid).toBe(false);
-        expect(invalidPrefix.error).toContain('start with "AIza"');
-    });
-
-    test('createLLMProvider should return correct instance', () => {
-        controller = new PopupController();
-
-        controller.state.llmProvider = 'gemini';
-        controller.state.apiKey = 'test';
-        expect(controller.createLLMProvider()).toBeInstanceOf(GeminiProvider);
-
-        controller.state.llmProvider = 'none';
-        expect(controller.createLLMProvider()).toBeInstanceOf(LLMFreeProvider);
-    });
+describe('normalizeUsername', () => {
+  test('strips @ and trims input', () => {
+    expect(normalizeUsername('  @hello  ')).toBe('hello');
+  });
 });

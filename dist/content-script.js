@@ -4,651 +4,768 @@
     return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
   };
 
+  // src/core/contracts/messages.js
+  var require_messages = __commonJS({
+    "src/core/contracts/messages.js"(exports, module) {
+      var EXTRACTION_SCOPES = ["bookmarks", "likes"];
+      var QUERY_SCOPES = ["bookmarks", "likes", "all"];
+      var EXTRACTION_MODES = ["full", "visible"];
+      var MESSAGE_TYPES = {
+        EXTRACTION_START: "EXTRACTION_START",
+        EXTRACTION_PROGRESS: "EXTRACTION_PROGRESS",
+        EXTRACTION_COMPLETE: "EXTRACTION_COMPLETE",
+        EXTRACTION_ERROR: "EXTRACTION_ERROR",
+        EXTRACTION_CANCEL: "EXTRACTION_CANCEL",
+        DATA_QUERY: "DATA_QUERY",
+        XA_START_EXTRACTION: "XA_START_EXTRACTION",
+        XA_GET_SETTINGS: "XA_GET_SETTINGS",
+        XA_SAVE_SETTINGS: "XA_SAVE_SETTINGS"
+      };
+      function isPlainObject(value) {
+        return !!value && typeof value === "object" && !Array.isArray(value);
+      }
+      function validateExtractionStart(payload) {
+        if (!isPlainObject(payload)) {
+          return { valid: false, error: "Payload must be an object" };
+        }
+        if (!EXTRACTION_SCOPES.includes(payload.scope)) {
+          return { valid: false, error: "scope must be bookmarks or likes" };
+        }
+        const mode = payload.mode || "full";
+        if (!EXTRACTION_MODES.includes(mode)) {
+          return { valid: false, error: "mode must be full or visible" };
+        }
+        return {
+          valid: true,
+          value: {
+            scope: payload.scope,
+            mode,
+            runId: typeof payload.runId === "string" ? payload.runId : `run-${Date.now()}`
+          }
+        };
+      }
+      function validateDataQuery(payload) {
+        if (!isPlainObject(payload)) {
+          return { valid: false, error: "Payload must be an object" };
+        }
+        const scope = payload.scope || "all";
+        if (!QUERY_SCOPES.includes(scope)) {
+          return { valid: false, error: "scope must be bookmarks, likes, or all" };
+        }
+        const filter = isPlainObject(payload.filter) ? payload.filter : {};
+        const sort = typeof payload.sort === "string" ? payload.sort : "capturedAt:desc";
+        const page = isPlainObject(payload.page) ? payload.page : {};
+        const offset = Number.isInteger(page.offset) && page.offset >= 0 ? page.offset : 0;
+        const limit = Number.isInteger(page.limit) && page.limit > 0 ? page.limit : 5e3;
+        return {
+          valid: true,
+          value: {
+            scope,
+            filter,
+            sort,
+            page: { offset, limit }
+          }
+        };
+      }
+      module.exports = {
+        MESSAGE_TYPES,
+        EXTRACTION_SCOPES,
+        QUERY_SCOPES,
+        EXTRACTION_MODES,
+        validateExtractionStart,
+        validateDataQuery,
+        isPlainObject
+      };
+    }
+  });
+
+  // src/extraction/route-detector.js
+  var require_route_detector = __commonJS({
+    "src/extraction/route-detector.js"(exports, module) {
+      function detectScopeFromUrl(url = "") {
+        const normalized = String(url).toLowerCase();
+        if (normalized.includes("/i/bookmarks")) {
+          return "bookmarks";
+        }
+        if (/\/[^/]+\/likes(?:\?|$|\/)/.test(normalized)) {
+          return "likes";
+        }
+        return "unknown";
+      }
+      function scopeToRecordScope(scope) {
+        return scope === "likes" ? "like" : "bookmark";
+      }
+      function getScopeUrl(scope, username = "") {
+        if (scope === "bookmarks") {
+          return "https://x.com/i/bookmarks";
+        }
+        if (!username) {
+          throw new Error("Username is required for likes extraction");
+        }
+        return `https://x.com/${username}/likes`;
+      }
+      function endpointScopeHint(url = "") {
+        const lower = String(url).toLowerCase();
+        if (lower.includes("bookmarks"))
+          return "bookmarks";
+        if (lower.includes("likes"))
+          return "likes";
+        return "unknown";
+      }
+      module.exports = {
+        detectScopeFromUrl,
+        scopeToRecordScope,
+        getScopeUrl,
+        endpointScopeHint
+      };
+    }
+  });
+
+  // src/extraction/parser-dom.js
+  var require_parser_dom = __commonJS({
+    "src/extraction/parser-dom.js"(exports, module) {
+      function parseCount(text) {
+        if (!text)
+          return null;
+        const match = String(text).trim().match(/([\d,.]+)\s*([KMBkmb])?/);
+        if (!match)
+          return null;
+        const value = Number(match[1].replace(/,/g, ""));
+        if (!Number.isFinite(value))
+          return null;
+        const suffix = match[2] ? match[2].toUpperCase() : null;
+        const multiplier = suffix === "K" ? 1e3 : suffix === "M" ? 1e6 : suffix === "B" ? 1e9 : 1;
+        return Math.round(value * multiplier);
+      }
+      function extractDomMedia(article) {
+        const media = [];
+        const images = article.querySelectorAll('img[src*="twimg.com/media"]');
+        images.forEach((img) => {
+          if (img.src) {
+            media.push({ type: "photo", url: img.src });
+          }
+        });
+        const videos = article.querySelectorAll("video");
+        videos.forEach((video) => {
+          const source = video.querySelector("source");
+          const url = source?.src || video.src;
+          if (url) {
+            media.push({ type: "video", url });
+          }
+        });
+        return media;
+      }
+      function parseArticle(article, scope, route) {
+        const link = article.querySelector('a[href*="/status/"]');
+        const url = link?.href || "";
+        if (!url)
+          return null;
+        const idMatch = url.match(/\/status\/(\d+)/);
+        const id = idMatch ? idMatch[1] : "";
+        let username = "";
+        let displayName = "";
+        const spans = article.querySelectorAll("span");
+        for (const span of spans) {
+          const content = span.textContent?.trim() || "";
+          if (!username && content.startsWith("@")) {
+            username = content.slice(1);
+          } else if (!displayName && content && !content.startsWith("@")) {
+            displayName = content;
+          }
+        }
+        if (!username) {
+          const match = url.match(/x\.com\/([^/]+)\/status/);
+          username = match ? match[1] : "";
+        }
+        const text = Array.from(article.querySelectorAll('[data-testid="tweetText"]')).map((node) => node.textContent?.trim() || "").filter(Boolean).join(" ");
+        const timeNode = article.querySelector("time");
+        const tweetPostedAt = timeNode?.getAttribute("datetime") || null;
+        const likes = parseCount(article.querySelector('[data-testid="like"]')?.textContent || "");
+        const retweets = parseCount(article.querySelector('[data-testid="retweet"]')?.textContent || "");
+        const replies = parseCount(article.querySelector('[data-testid="reply"]')?.textContent || "");
+        let views = null;
+        const viewNode = Array.from(article.querySelectorAll('a[aria-label*="View"], span[aria-label*="View"]')).find((node) => {
+          return /view/i.test(node.getAttribute("aria-label") || "");
+        });
+        if (viewNode) {
+          views = parseCount(viewNode.getAttribute("aria-label") || "");
+        }
+        return {
+          id,
+          url,
+          scope: scope === "likes" ? "like" : "bookmark",
+          capturedAt: (/* @__PURE__ */ new Date()).toISOString(),
+          tweetPostedAt,
+          author: {
+            username,
+            displayName
+          },
+          text,
+          media: extractDomMedia(article),
+          metrics: {
+            likes,
+            retweets,
+            replies,
+            views
+          },
+          source: {
+            route,
+            via: "dom"
+          }
+        };
+      }
+      function parseVisibleArticles(scope, route) {
+        const articles = Array.from(document.querySelectorAll("article"));
+        const parsed = [];
+        for (const article of articles) {
+          const item = parseArticle(article, scope, route);
+          if (item)
+            parsed.push(item);
+        }
+        return {
+          scannedCount: articles.length,
+          records: parsed
+        };
+      }
+      module.exports = {
+        parseVisibleArticles,
+        parseArticle,
+        parseCount,
+        extractDomMedia
+      };
+    }
+  });
+
+  // src/core/contracts/record.js
+  var require_record = __commonJS({
+    "src/core/contracts/record.js"(exports, module) {
+      var VALID_SCOPE_VALUES = ["bookmark", "like"];
+      var VALID_MEDIA_TYPES = ["photo", "video", "gif"];
+      function toNullableNumber(value) {
+        if (value === null || value === void 0 || value === "") {
+          return null;
+        }
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : null;
+      }
+      function normalizeMediaType(value) {
+        if (value === "animated_gif")
+          return "gif";
+        if (value === "photo" || value === "video" || value === "gif")
+          return value;
+        return "photo";
+      }
+      function extractTweetIdFromUrl(url) {
+        if (typeof url !== "string")
+          return null;
+        const match = url.match(/\/status\/(\d+)/);
+        return match ? match[1] : null;
+      }
+      function buildRecordId(raw) {
+        if (raw.id && typeof raw.id === "string")
+          return raw.id;
+        const idFromUrl = extractTweetIdFromUrl(raw.url);
+        if (idFromUrl)
+          return idFromUrl;
+        const text = `${raw.url || ""}|${raw.text || ""}|${raw.author?.username || ""}`;
+        let hash = 0;
+        for (let i = 0; i < text.length; i += 1) {
+          hash = (hash << 5) - hash + text.charCodeAt(i) | 0;
+        }
+        return `fallback-${Math.abs(hash)}`;
+      }
+      function normalizeTweetRecord(raw) {
+        const scope = raw.scope === "likes" || raw.scope === "like" ? "like" : "bookmark";
+        const author = raw.author || {};
+        const media = Array.isArray(raw.media) ? raw.media : [];
+        const metrics = raw.metrics || {};
+        return {
+          id: buildRecordId(raw),
+          url: typeof raw.url === "string" ? raw.url : "",
+          scope,
+          capturedAt: raw.capturedAt || (/* @__PURE__ */ new Date()).toISOString(),
+          tweetPostedAt: raw.tweetPostedAt || null,
+          author: {
+            username: typeof author.username === "string" ? author.username : "",
+            displayName: typeof author.displayName === "string" ? author.displayName : "",
+            userId: typeof author.userId === "string" ? author.userId : void 0
+          },
+          text: typeof raw.text === "string" ? raw.text : "",
+          media: media.filter((item) => item && typeof item.url === "string" && item.url).map((item) => ({
+            type: normalizeMediaType(item.type),
+            url: item.url,
+            previewUrl: typeof item.previewUrl === "string" ? item.previewUrl : void 0,
+            durationMs: toNullableNumber(item.durationMs)
+          })),
+          metrics: {
+            likes: toNullableNumber(metrics.likes),
+            retweets: toNullableNumber(metrics.retweets),
+            replies: toNullableNumber(metrics.replies),
+            views: toNullableNumber(metrics.views)
+          },
+          source: {
+            route: typeof raw.source?.route === "string" ? raw.source.route : "",
+            via: raw.source?.via === "network" ? "network" : "dom"
+          },
+          ai: raw.ai && typeof raw.ai === "object" ? {
+            categories: Array.isArray(raw.ai.categories) ? raw.ai.categories.filter(Boolean) : [],
+            tags: Array.isArray(raw.ai.tags) ? raw.ai.tags.filter(Boolean) : [],
+            confidence: typeof raw.ai.confidence === "number" ? raw.ai.confidence : 0,
+            rationale: typeof raw.ai.rationale === "string" ? raw.ai.rationale : ""
+          } : void 0
+        };
+      }
+      function validateTweetRecordV2(record) {
+        if (!record || typeof record !== "object") {
+          return { valid: false, error: "Record must be an object" };
+        }
+        if (!record.id || typeof record.id !== "string") {
+          return { valid: false, error: "Record id is required" };
+        }
+        if (!record.url || typeof record.url !== "string") {
+          return { valid: false, error: "Record url is required" };
+        }
+        if (!VALID_SCOPE_VALUES.includes(record.scope)) {
+          return { valid: false, error: "Record scope must be bookmark or like" };
+        }
+        if (!record.author || typeof record.author !== "object") {
+          return { valid: false, error: "Record author is required" };
+        }
+        if (!Array.isArray(record.media)) {
+          return { valid: false, error: "Record media must be an array" };
+        }
+        if (record.media.some((item) => !VALID_MEDIA_TYPES.includes(item.type))) {
+          return { valid: false, error: "Record media type is invalid" };
+        }
+        return { valid: true, value: record };
+      }
+      module.exports = {
+        VALID_SCOPE_VALUES,
+        VALID_MEDIA_TYPES,
+        extractTweetIdFromUrl,
+        normalizeTweetRecord,
+        validateTweetRecordV2,
+        normalizeMediaType,
+        toNullableNumber
+      };
+    }
+  });
+
+  // src/extraction/normalizer.js
+  var require_normalizer = __commonJS({
+    "src/extraction/normalizer.js"(exports, module) {
+      var { normalizeTweetRecord } = require_record();
+      var { scopeToRecordScope } = require_route_detector();
+      function normalizeExtractedTweet(rawTweet, scope, sourceMeta = {}) {
+        return normalizeTweetRecord({
+          ...rawTweet,
+          scope: scopeToRecordScope(scope),
+          source: {
+            route: sourceMeta.route || "",
+            via: sourceMeta.via || "dom"
+          }
+        });
+      }
+      function dedupeRecords(records) {
+        const byId = /* @__PURE__ */ new Map();
+        for (const record of records) {
+          byId.set(record.id, record);
+        }
+        return Array.from(byId.values());
+      }
+      module.exports = {
+        normalizeExtractedTweet,
+        dedupeRecords
+      };
+    }
+  });
+
+  // src/extraction/engine.js
+  var require_engine = __commonJS({
+    "src/extraction/engine.js"(exports, module) {
+      var { detectScopeFromUrl } = require_route_detector();
+      var { parseVisibleArticles } = require_parser_dom();
+      var { normalizeExtractedTweet, dedupeRecords } = require_normalizer();
+      function wait(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+      var ExtractionEngine = class {
+        constructor(options = {}) {
+          this.scrollDelay = options.scrollDelay || 1200;
+          this.maxLoops = options.maxLoops || 80;
+          this.stableLoops = options.stableLoops || 3;
+        }
+        collectOnce(scope, route, networkRecords = []) {
+          const domSnapshot = parseVisibleArticles(scope, route);
+          const all = [
+            ...domSnapshot.records.map((record) => normalizeExtractedTweet(record, scope, { route, via: "dom" })),
+            ...networkRecords.filter((record) => {
+              return scope === "bookmarks" ? record.scope === "bookmark" : record.scope === "like";
+            }).map((record) => normalizeExtractedTweet(record, scope, { route, via: "network" }))
+          ];
+          return {
+            scannedCount: domSnapshot.scannedCount,
+            records: dedupeRecords(all)
+          };
+        }
+        async extract({ scope, mode, runId, getNetworkRecords, onProgress, isCancelled }) {
+          const startedAt = Date.now();
+          const route = window.location.pathname;
+          const detectedScope = detectScopeFromUrl(window.location.href);
+          if (detectedScope !== scope) {
+            const error = new Error(`Route mismatch: expected ${scope}, got ${detectedScope}`);
+            error.code = "ROUTE_MISMATCH";
+            throw error;
+          }
+          let merged = /* @__PURE__ */ new Map();
+          let scannedCount = 0;
+          const pushRecords = (records2) => {
+            for (const record of records2) {
+              merged.set(record.id, record);
+            }
+          };
+          const runCollect = () => {
+            const snapshot = this.collectOnce(scope, route, getNetworkRecords());
+            scannedCount += snapshot.scannedCount;
+            pushRecords(snapshot.records);
+            return snapshot;
+          };
+          runCollect();
+          if (mode === "full") {
+            let lastHeight = 0;
+            let stableCount = 0;
+            let loop = 0;
+            while (loop < this.maxLoops && stableCount < this.stableLoops) {
+              if (isCancelled()) {
+                const error = new Error("Extraction cancelled");
+                error.code = "CANCELLED";
+                throw error;
+              }
+              window.scrollTo(0, document.body.scrollHeight);
+              await wait(this.scrollDelay);
+              const newHeight = document.body.scrollHeight;
+              if (newHeight === lastHeight) {
+                stableCount += 1;
+              } else {
+                stableCount = 0;
+              }
+              lastHeight = newHeight;
+              const snapshot = runCollect();
+              if (typeof onProgress === "function") {
+                onProgress({
+                  type: "EXTRACTION_PROGRESS",
+                  runId,
+                  scope,
+                  scannedCount,
+                  capturedCount: merged.size,
+                  cursorState: {
+                    loop,
+                    stableCount
+                  },
+                  status: `Scanning ${scope}...`
+                });
+              }
+              if (snapshot.records.length === 0 && stableCount >= this.stableLoops) {
+                break;
+              }
+              loop += 1;
+            }
+          }
+          const records = Array.from(merged.values());
+          return {
+            runId,
+            scope,
+            route,
+            scannedCount,
+            records,
+            totalCount: records.length,
+            durationMs: Date.now() - startedAt
+          };
+        }
+      };
+      module.exports = {
+        ExtractionEngine
+      };
+    }
+  });
+
+  // src/extraction/parser-network.js
+  var require_parser_network = __commonJS({
+    "src/extraction/parser-network.js"(exports, module) {
+      var { endpointScopeHint } = require_route_detector();
+      function collectTweetResultNodes(node, output, visited = /* @__PURE__ */ new WeakSet()) {
+        if (!node || typeof node !== "object")
+          return;
+        if (visited.has(node))
+          return;
+        visited.add(node);
+        if (node.legacy && node.core && node.core.user_results) {
+          output.push(node);
+        }
+        if (node.tweet_results && node.tweet_results.result) {
+          collectTweetResultNodes(node.tweet_results.result, output, visited);
+        }
+        for (const value of Object.values(node)) {
+          if (value && typeof value === "object") {
+            collectTweetResultNodes(value, output, visited);
+          }
+        }
+      }
+      function selectBestVideoVariant(variants) {
+        if (!Array.isArray(variants))
+          return null;
+        const mp4s = variants.filter((item) => item && item.content_type === "video/mp4" && item.url).sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+        return mp4s.length > 0 ? mp4s[0] : null;
+      }
+      function parseNetworkMedia(legacy = {}) {
+        const mediaEntities = legacy.extended_entities?.media || legacy.entities?.media || [];
+        return mediaEntities.map((item) => {
+          const type = item.type === "animated_gif" ? "gif" : item.type || "photo";
+          if (type === "video" || type === "gif") {
+            const bestVariant = selectBestVideoVariant(item.video_info?.variants || []);
+            return {
+              type,
+              url: bestVariant?.url || item.media_url_https || "",
+              previewUrl: item.media_url_https || void 0,
+              durationMs: item.video_info?.duration_millis || null
+            };
+          }
+          return {
+            type: "photo",
+            url: item.media_url_https || item.media_url || ""
+          };
+        }).filter((item) => item.url);
+      }
+      function parseTweetResult(resultNode, scopeHint, route) {
+        const legacy = resultNode.legacy;
+        const core = resultNode.core?.user_results?.result?.legacy;
+        if (!legacy || !core) {
+          return null;
+        }
+        const id = legacy.id_str || resultNode.rest_id;
+        const username = core.screen_name || "";
+        const noteText = resultNode.note_tweet?.note_tweet_results?.result?.text;
+        const text = noteText || legacy.full_text || "";
+        return {
+          id,
+          url: id && username ? `https://x.com/${username}/status/${id}` : "",
+          scope: scopeHint === "likes" ? "like" : "bookmark",
+          capturedAt: (/* @__PURE__ */ new Date()).toISOString(),
+          tweetPostedAt: legacy.created_at ? new Date(legacy.created_at).toISOString() : null,
+          author: {
+            username,
+            displayName: core.name || "",
+            userId: core.id_str || void 0
+          },
+          text,
+          media: parseNetworkMedia(legacy),
+          metrics: {
+            likes: legacy.favorite_count,
+            retweets: legacy.retweet_count,
+            replies: legacy.reply_count,
+            views: resultNode.views?.count || null
+          },
+          source: {
+            route,
+            via: "network"
+          }
+        };
+      }
+      function parseNetworkPayload(payload, endpointUrl = "") {
+        const nodes = [];
+        collectTweetResultNodes(payload, nodes);
+        const scopeHint = endpointScopeHint(endpointUrl);
+        const route = scopeHint === "likes" ? "/likes" : "/i/bookmarks";
+        return nodes.map((node) => parseTweetResult(node, scopeHint, route)).filter((item) => item && item.url);
+      }
+      module.exports = {
+        parseNetworkPayload,
+        parseNetworkMedia,
+        collectTweetResultNodes
+      };
+    }
+  });
+
+  // src/extraction/bounded-cache.js
+  var require_bounded_cache = __commonJS({
+    "src/extraction/bounded-cache.js"(exports, module) {
+      var BoundedMap = class {
+        constructor(limit = 5e3) {
+          this.limit = limit;
+          this.map = /* @__PURE__ */ new Map();
+        }
+        set(key, value) {
+          if (this.map.has(key)) {
+            this.map.delete(key);
+          }
+          this.map.set(key, value);
+          if (this.map.size > this.limit) {
+            const oldestKey = this.map.keys().next().value;
+            this.map.delete(oldestKey);
+          }
+        }
+        get(key) {
+          return this.map.get(key);
+        }
+        values() {
+          return Array.from(this.map.values());
+        }
+        clear() {
+          this.map.clear();
+        }
+        get size() {
+          return this.map.size;
+        }
+      };
+      module.exports = {
+        BoundedMap
+      };
+    }
+  });
+
+  // src/extraction/index.js
+  var require_extraction = __commonJS({
+    "src/extraction/index.js"(exports, module) {
+      var { ExtractionEngine } = require_engine();
+      var { parseNetworkPayload } = require_parser_network();
+      var { parseVisibleArticles } = require_parser_dom();
+      var { detectScopeFromUrl, getScopeUrl, endpointScopeHint } = require_route_detector();
+      var { BoundedMap } = require_bounded_cache();
+      module.exports = {
+        ExtractionEngine,
+        parseNetworkPayload,
+        parseVisibleArticles,
+        detectScopeFromUrl,
+        getScopeUrl,
+        endpointScopeHint,
+        BoundedMap
+      };
+    }
+  });
+
   // src/content-script/index.js
   var require_content_script = __commonJS({
     "src/content-script/index.js"(exports, module) {
-      console.log("X Bookmarks Extractor: Content script loaded");
-      var XBookmarkScanner = class {
+      var {
+        MESSAGE_TYPES,
+        validateExtractionStart
+      } = require_messages();
+      var {
+        ExtractionEngine,
+        parseNetworkPayload,
+        BoundedMap,
+        detectScopeFromUrl
+      } = require_extraction();
+      var XAssistantContentScript = class {
         constructor() {
-          this.setupMessageListener();
-          this.cachedElements = /* @__PURE__ */ new Map();
-          this.performanceMetrics = { startTime: 0, endTime: 0, articlesProcessed: 0 };
-          console.log("[X Extractor] XBookmarkScanner initialized");
-          this.sendProgress("Content script initialized.");
-          this.injectedButtons = /* @__PURE__ */ new Set();
-          this.initializeButtonInjection();
-          this.interceptedTweets = /* @__PURE__ */ new Map();
-          this.injectInterceptor();
-          this.setupInterceptorListener();
+          this.engine = new ExtractionEngine();
+          this.networkCache = new BoundedMap(5e3);
+          this.runTokens = /* @__PURE__ */ new Map();
+          this.installInjectedInterceptor();
+          this.setupNetworkListener();
+          this.setupRuntimeListener();
         }
-        injectInterceptor() {
+        installInjectedInterceptor() {
           const script = document.createElement("script");
-          script.src = chrome.runtime.getURL("injected.js");
-          script.onload = function() {
+          script.src = chrome.runtime.getURL("dist/injected.js");
+          script.onload = function cleanup() {
             this.remove();
           };
           (document.head || document.documentElement).appendChild(script);
-          console.log("[X Extractor] Injected network interceptor");
         }
-        setupInterceptorListener() {
-          window.addEventListener("x-bookmarks-response", (event) => {
-            const { data } = event.detail;
-            this.processInterception(data);
+        setupNetworkListener() {
+          window.addEventListener("x-assistant-network", (event) => {
+            const detail = event.detail || {};
+            if (!detail.payload)
+              return;
+            const parsed = parseNetworkPayload(detail.payload, detail.url || "");
+            parsed.forEach((record) => {
+              this.networkCache.set(record.id, record);
+            });
+            chrome.runtime.sendMessage({
+              type: MESSAGE_TYPES.EXTRACTION_PROGRESS,
+              scope: detectScopeFromUrl(window.location.href),
+              scannedCount: 0,
+              capturedCount: this.networkCache.size,
+              cursorState: { loop: 0, stableCount: 0 },
+              status: `Network captured ${parsed.length} items`,
+              __relay: false
+            }).catch(() => {
+            });
           });
         }
-        processInterception(data) {
-          try {
-            const entries = this.findEntries(data);
-            let count = 0;
-            entries.forEach((entry) => {
-              var _a, _b, _c;
-              const tweetResult = (_c = (_b = (_a = entry.content) == null ? void 0 : _a.itemContent) == null ? void 0 : _b.tweet_results) == null ? void 0 : _c.result;
-              if (tweetResult) {
-                const tweet = this.parseTweetFromAPI(tweetResult);
-                if (tweet && tweet.url) {
-                  this.interceptedTweets.set(tweet.url, tweet);
-                  count++;
-                }
-              }
-            });
-            if (count > 0) {
-              console.log(`[X Extractor] Intercepted ${count} tweets from API`);
-              this.sendProgress(`Intercepted ${count} new bookmarks from network.`);
-              chrome.runtime.sendMessage({
-                type: "X_BOOKMARKS_LOADED",
-                count,
-                timestamp: Date.now()
-              }).catch(() => {
-              });
+        setupRuntimeListener() {
+          chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+            if (!message || typeof message !== "object")
+              return;
+            if (message.type === MESSAGE_TYPES.EXTRACTION_START) {
+              this.handleExtractionStart(message.payload).then((result) => sendResponse({ success: true, ...result })).catch((error) => sendResponse({ success: false, error: error.message, code: error.code || "EXTRACTION_FAILED" }));
+              return true;
             }
-          } catch (e) {
-            console.error("[X Extractor] Error processing interception:", e);
-          }
-        }
-        findEntries(obj, entries = []) {
-          if (!obj || typeof obj !== "object")
-            return entries;
-          if (obj.entries && Array.isArray(obj.entries)) {
-            entries.push(...obj.entries);
-          }
-          Object.values(obj).forEach((value) => this.findEntries(value, entries));
-          return entries;
-        }
-        parseTweetFromAPI(result) {
-          var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m;
-          try {
-            const legacy = result.legacy;
-            const core = (_c = (_b = (_a = result.core) == null ? void 0 : _a.user_results) == null ? void 0 : _b.result) == null ? void 0 : _c.legacy;
-            const note = (_f = (_e = (_d = result.note_tweet) == null ? void 0 : _d.note_tweet_results) == null ? void 0 : _e.result) == null ? void 0 : _f.text;
-            if (!legacy || !core)
-              return null;
-            const id = legacy.id_str;
-            const username = core.screen_name;
-            const text = note || legacy.full_text || "";
-            let media = [];
-            const mediaEntities = ((_g = legacy.extended_entities) == null ? void 0 : _g.media) || ((_h = legacy.entities) == null ? void 0 : _h.media) || [];
-            media = mediaEntities.map((m) => {
-              let url = m.media_url_https;
-              let type = m.type;
-              if (m.video_info && m.video_info.variants) {
-                const variants = m.video_info.variants.filter((v) => v.content_type === "video/mp4").sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
-                if (variants.length > 0) {
-                  url = variants[0].url;
-                }
+            if (message.type === MESSAGE_TYPES.EXTRACTION_CANCEL) {
+              const runId = message.payload?.runId;
+              if (runId && this.runTokens.has(runId)) {
+                this.runTokens.get(runId).cancelled = true;
               }
-              return { type, url };
-            });
-            return {
-              url: `https://x.com/${username}/status/${id}`,
-              text,
-              displayName: core.name,
-              username,
-              dateTime: legacy.created_at,
-              // "Wed Oct 10 20:19:24 +0000 2018"
-              likes: ((_i = legacy.favorite_count) == null ? void 0 : _i.toString()) || "0",
-              retweets: ((_j = legacy.retweet_count) == null ? void 0 : _j.toString()) || "0",
-              replies: ((_k = legacy.reply_count) == null ? void 0 : _k.toString()) || "0",
-              views: ((_m = (_l = result.views) == null ? void 0 : _l.count) == null ? void 0 : _m.toString()) || "0",
-              media
-            };
-          } catch (e) {
-            return null;
-          }
+              sendResponse({ success: true });
+            }
+          });
         }
-        async sendProgress(status) {
+        async handleExtractionStart(payload) {
+          const validation = validateExtractionStart(payload);
+          if (!validation.valid) {
+            const error = new Error(validation.error);
+            error.code = "INVALID_REQUEST";
+            throw error;
+          }
+          const { scope, mode, runId } = validation.value;
+          const token = { cancelled: false };
+          this.runTokens.set(runId, token);
           try {
-            chrome.runtime.sendMessage({ type: "progressUpdate", status }).catch(() => {
-            });
-          } catch (e) {
-          }
-        }
-        setupMessageListener() {
-          chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-            try {
-              console.log("[X Extractor] Received message:", request);
-              if (request.action === "scanBookmarksWithFallback") {
-                this.sendProgress("Starting extraction...");
-                this.scanCurrentPage(true).then((result) => {
-                  this.sendProgress("Extraction complete.");
-                  console.log("[X Extractor] scanCurrentPage complete:", result.tweets.length, "tweets");
-                  sendResponse({ ...result, success: true });
-                }).catch((error) => {
-                  this.sendProgress("Extraction failed.");
-                  console.error("[X Extractor] Scanning error (fallback):", error);
-                  sendResponse({ tweets: [], debugUrls: [], success: false, error: error.message });
+            const result = await this.engine.extract({
+              scope,
+              mode,
+              runId,
+              getNetworkRecords: () => this.networkCache.values(),
+              isCancelled: () => token.cancelled,
+              onProgress: (progress) => {
+                chrome.runtime.sendMessage({ ...progress, __relay: false }).catch(() => {
                 });
-                return true;
-              }
-              if (request.action === "scanBookmarks") {
-                this.sendProgress("Starting extraction...");
-                this.scanCurrentPage(false).then((result) => {
-                  this.sendProgress("Extraction complete.");
-                  console.log("[X Extractor] scanCurrentPage complete:", result.tweets.length, "tweets");
-                  sendResponse({ tweets: result.tweets, success: true });
-                }).catch((error) => {
-                  this.sendProgress("Extraction failed.");
-                  console.error("[X Extractor] Scanning error:", error);
-                  sendResponse({ tweets: [], success: false, error: error.message });
-                });
-                return true;
-              }
-              if (request.action === "getPageInfo") {
-                const info = {
-                  url: window.location.href,
-                  title: document.title,
-                  isBookmarksPage: this.isBookmarksPage()
-                };
-                this.sendProgress("Checking if this is the bookmarks page...");
-                console.log("[X Extractor] getPageInfo:", info);
-                sendResponse(info);
-              }
-            } catch (err) {
-              this.sendProgress("Error in message listener.");
-              console.error("[X Extractor] Message listener error:", err);
-              sendResponse({ success: false, error: err.message });
-            }
-          });
-        }
-        isBookmarksPage() {
-          const isBookmarks = window.location.href.includes("/i/bookmarks");
-          this.sendProgress(isBookmarks ? "On bookmarks page." : "Not on bookmarks page.");
-          console.log("[X Extractor] isBookmarksPage:", isBookmarks, window.location.href);
-          return isBookmarks;
-        }
-        // Unified scan method with optional fallback
-        async scanCurrentPage(useFallback = false) {
-          try {
-            this.performanceMetrics.startTime = performance.now();
-            this.sendProgress(useFallback ? "Extracting bookmarks (with fallback)..." : "Extracting visible bookmarks...");
-            console.log("[X Extractor] scanCurrentPage started, fallback:", useFallback);
-            const tweets = [];
-            const foundUrls = /* @__PURE__ */ new Set();
-            const articles = document.querySelectorAll("article");
-            this.performanceMetrics.articlesProcessed = articles.length;
-            for (const article of articles) {
-              const tweetData = this.extractTweetData(article);
-              if (tweetData.url) {
-                const validation = this.validateBookmarkData(tweetData);
-                if (validation.valid) {
-                  foundUrls.add(tweetData.url);
-                  if (this.interceptedTweets.has(tweetData.url)) {
-                    tweets.push(this.interceptedTweets.get(tweetData.url));
-                  } else {
-                    tweets.push(tweetData);
-                  }
-                } else {
-                  console.warn("[X Extractor] Invalid bookmark data:", validation.error, tweetData.url);
-                }
-              }
-            }
-            this.interceptedTweets.forEach((tweet, url) => {
-              if (!foundUrls.has(url)) {
-                foundUrls.add(url);
-                tweets.push(tweet);
               }
             });
-            if (useFallback) {
-              this.sendProgress("Checking for extra tweet links...");
-              const allLinks = Array.from(document.querySelectorAll('a[href*="/status/"]'));
-              for (const link of allLinks) {
-                if (!foundUrls.has(link.href)) {
-                  foundUrls.add(link.href);
-                  const match = link.href.match(/(?:x\.com|twitter\.com)\/([^\/]+)\/status/);
-                  tweets.push({
-                    url: link.href,
-                    text: "",
-                    displayName: "",
-                    username: match ? match[1] : "",
-                    dateTime: "",
-                    likes: "",
-                    retweets: "",
-                    replies: "",
-                    views: ""
-                  });
-                }
-              }
-            }
-            this.performanceMetrics.endTime = performance.now();
-            const duration = Math.round(this.performanceMetrics.endTime - this.performanceMetrics.startTime);
-            this.sendProgress("Extraction finished.");
-            console.log(`[X Extractor] scanCurrentPage finished: ${tweets.length} tweets, ${duration}ms`);
-            return {
-              tweets,
-              debugUrls: useFallback ? Array.from(foundUrls) : void 0,
-              performance: {
-                duration,
-                articlesProcessed: this.performanceMetrics.articlesProcessed,
-                tweetsExtracted: tweets.length
-              }
+            const completion = {
+              type: MESSAGE_TYPES.EXTRACTION_COMPLETE,
+              runId: result.runId,
+              scope: result.scope,
+              totalCount: result.totalCount,
+              durationMs: result.durationMs,
+              records: result.records,
+              __relay: false
             };
-          } catch (err) {
-            this.sendProgress("Extraction error.");
-            console.error("[X Extractor] scanCurrentPage error:", err);
-            throw err;
-          }
-        }
-        // Extract data from a single article element (DRY principle)
-        // PERFORMANCE OPTIMIZED: Cache selectors and batch queries
-        extractTweetData(article) {
-          var _a, _b, _c, _d, _e, _f;
-          try {
-            const link = article.querySelector('a[href*="/status/"]');
-            const url = link ? link.href : "";
-            if (!url)
-              return { url: "" };
-            const textEls = article.querySelectorAll('[data-testid="tweetText"]');
-            const textParts = [];
-            textEls.forEach((el) => {
-              var _a2;
-              const text2 = (_a2 = el.textContent) == null ? void 0 : _a2.trim();
-              if (text2)
-                textParts.push(text2);
+            chrome.runtime.sendMessage(completion).catch(() => {
             });
-            const text = textParts.join(" ");
-            let displayName = "";
-            let username = "";
-            const header = (_b = (_a = article.querySelector('div[role="group"]')) == null ? void 0 : _a.parentElement) == null ? void 0 : _b.parentElement;
-            if (header) {
-              const spans = header.querySelectorAll("span");
-              if (spans.length > 0)
-                displayName = ((_c = spans[0].textContent) == null ? void 0 : _c.trim()) || "";
-              for (const span of spans) {
-                const spanText = (_d = span.textContent) == null ? void 0 : _d.trim();
-                if (spanText && spanText.startsWith("@")) {
-                  username = spanText.replace("@", "");
-                  break;
-                }
-              }
-            }
-            if (!displayName) {
-              const nameSpan = article.querySelector('div[dir="auto"] > span');
-              if (nameSpan)
-                displayName = ((_e = nameSpan.textContent) == null ? void 0 : _e.trim()) || "";
-            }
-            if (!username) {
-              const handleSpan = article.querySelector('div[dir="ltr"] > span');
-              if (handleSpan) {
-                username = ((_f = handleSpan.textContent) == null ? void 0 : _f.replace("@", "").trim()) || "";
-              }
-            }
-            if (!username && url) {
-              const match = url.match(/(?:x\.com|twitter\.com)\/([^\/]+)\/status/);
-              if (match)
-                username = match[1];
-            }
-            const timeEl = article.querySelector("time");
-            const dateTime = timeEl ? timeEl.getAttribute("datetime") || "" : "";
-            const likeEl = article.querySelector('[data-testid="like"]');
-            const likes = likeEl ? this.extractNumber(likeEl.textContent) : "";
-            const retweetEl = article.querySelector('[data-testid="retweet"]');
-            const retweets = retweetEl ? this.extractNumber(retweetEl.textContent) : "";
-            const replyEl = article.querySelector('[data-testid="reply"]');
-            const replies = replyEl ? this.extractNumber(replyEl.textContent) : "";
-            let views = "";
-            const allEls = article.querySelectorAll('a[aria-label*="View"], span[aria-label*="View"]');
-            for (const el of allEls) {
-              const label = el.getAttribute("aria-label");
-              if (label && /view/i.test(label)) {
-                views = this.extractNumber(label);
-                break;
-              }
-            }
-            return {
-              url,
-              text,
-              displayName,
-              username,
-              dateTime,
-              likes,
-              retweets,
-              replies,
-              views
-            };
+            return completion;
           } catch (error) {
-            console.error("[X Extractor] Error extracting tweet data:", error);
-            return {
-              url: "",
-              text: "",
-              displayName: "",
-              username: "",
-              dateTime: "",
-              likes: "",
-              retweets: "",
-              replies: "",
-              views: ""
+            const failure = {
+              type: MESSAGE_TYPES.EXTRACTION_ERROR,
+              runId,
+              scope,
+              code: error.code || "EXTRACTION_FAILED",
+              message: error.message,
+              recoverable: error.code !== "ROUTE_MISMATCH",
+              __relay: false
             };
-          }
-        }
-        // PERFORMANCE HELPER: Extract numbers more efficiently and handle K/M/B abbreviations
-        extractNumber(text) {
-          if (!text)
-            return "";
-          const abbreviationMatch = text.match(/([\d,.]+)\s*([KMBkmb])/);
-          if (abbreviationMatch) {
-            const num = parseFloat(abbreviationMatch[1].replace(/,/g, ""));
-            const suffix = abbreviationMatch[2].toUpperCase();
-            const multipliers = {
-              "K": 1e3,
-              "M": 1e6,
-              "B": 1e9
-            };
-            const result = num * (multipliers[suffix] || 1);
-            return Math.round(result).toString();
-          }
-          const numberMatch = text.match(/([\d,.]+)/);
-          return numberMatch ? numberMatch[1].replace(/,/g, "") : "";
-        }
-        // Validate bookmark data before storing
-        validateBookmarkData(bookmark) {
-          if (!bookmark || typeof bookmark !== "object") {
-            return { valid: false, error: "Invalid bookmark object" };
-          }
-          if (!bookmark.url || typeof bookmark.url !== "string" || bookmark.url.trim() === "") {
-            return { valid: false, error: "Missing or invalid URL" };
-          }
-          if (!bookmark.url.match(/(?:x\.com|twitter\.com)\/[^\/]+\/status\/\d+/)) {
-            return { valid: false, error: "Invalid X/Twitter URL format" };
-          }
-          return { valid: true, error: null };
-        }
-        // ============================================
-        // ADD TO ANALYZER BUTTON INJECTION
-        // ============================================
-        initializeButtonInjection() {
-          console.log("[X Extractor] Initializing Add to Analyzer button injection");
-          this.injectAddToAnalyzerButtons();
-          const observer = new MutationObserver((mutations) => {
-            if (this.injectionTimeout)
-              clearTimeout(this.injectionTimeout);
-            this.injectionTimeout = setTimeout(() => {
-              this.injectAddToAnalyzerButtons();
-            }, 500);
-          });
-          const timeline = document.querySelector('div[aria-label="Timeline: Your Home Timeline"]') || document.querySelector('main[role="main"]') || document.body;
-          if (timeline) {
-            observer.observe(timeline, {
-              childList: true,
-              subtree: true
+            chrome.runtime.sendMessage(failure).catch(() => {
             });
-            console.log("[X Extractor] Mutation observer attached to timeline");
+            throw error;
+          } finally {
+            this.runTokens.delete(runId);
           }
-        }
-        injectAddToAnalyzerButtons() {
-          const articles = document.querySelectorAll("article");
-          let injectedCount = 0;
-          articles.forEach((article) => {
-            const tweetUrl = this.getTweetUrl(article);
-            if (!tweetUrl || this.injectedButtons.has(tweetUrl)) {
-              return;
-            }
-            const actionBar = article.querySelector('div[role="group"]');
-            if (!actionBar)
-              return;
-            const analyzerButton = this.createAnalyzerButton(article, tweetUrl);
-            const lastButton = actionBar.lastElementChild;
-            if (lastButton) {
-              actionBar.insertBefore(analyzerButton, lastButton.nextSibling);
-              this.injectedButtons.add(tweetUrl);
-              injectedCount++;
-            }
-          });
-          if (injectedCount > 0) {
-            console.log(`[X Extractor] Injected ${injectedCount} Add to Analyzer buttons`);
-          }
-        }
-        getTweetUrl(article) {
-          const link = article.querySelector('a[href*="/status/"]');
-          return link ? link.href : null;
-        }
-        createAnalyzerButton(article, tweetUrl) {
-          const container = document.createElement("div");
-          container.className = "x-analyzer-button-container";
-          container.style.cssText = `
-      display: inline-flex;
-      align-items: center;
-      margin-left: 8px;
-    `;
-          const button = document.createElement("button");
-          button.className = "x-analyzer-button";
-          button.setAttribute("aria-label", "Add to Analyzer");
-          button.style.cssText = `
-      background: transparent;
-      border: none;
-      cursor: pointer;
-      padding: 8px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      border-radius: 9999px;
-      transition: background-color 0.2s;
-      color: rgb(113, 118, 123);
-      min-width: 32px;
-      min-height: 32px;
-    `;
-          button.innerHTML = `
-      <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
-        <path d="M4 4.5C4 3.12 5.119 2 6.5 2h11C18.881 2 20 3.12 20 4.5v18.44l-8-5.71-8 5.71V4.5zM6.5 4c-.276 0-.5.22-.5.5v14.56l6-4.29 6 4.29V4.5c0-.28-.224-.5-.5-.5h-11z"/>
-        <path d="M12 6v4m0 0v4m0-4h4m-4 0H8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-      </svg>
-    `;
-          button.addEventListener("mouseenter", () => {
-            button.style.backgroundColor = "rgba(29, 155, 240, 0.1)";
-            button.style.color = "rgb(29, 155, 240)";
-          });
-          button.addEventListener("mouseleave", () => {
-            button.style.backgroundColor = "transparent";
-            button.style.color = "rgb(113, 118, 123)";
-          });
-          button.addEventListener("click", (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            this.handleAddToAnalyzer(article, tweetUrl, button);
-          });
-          container.appendChild(button);
-          return container;
-        }
-        async handleAddToAnalyzer(article, tweetUrl, button) {
-          console.log("[X Extractor] Add to Analyzer clicked:", tweetUrl);
-          button.style.color = "rgb(29, 155, 240)";
-          button.style.transform = "scale(1.1)";
-          setTimeout(() => {
-            button.style.transform = "scale(1)";
-          }, 200);
-          const tweetData = this.extractTweetData(article);
-          this.showQuickTagDialog(tweetData, button);
-        }
-        showQuickTagDialog(tweetData, buttonEl) {
-          const existingDialog = document.querySelector(".x-analyzer-tag-dialog");
-          if (existingDialog)
-            existingDialog.remove();
-          const dialog = document.createElement("div");
-          dialog.className = "x-analyzer-tag-dialog";
-          dialog.style.cssText = `
-      position: fixed;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      background: white;
-      border-radius: 16px;
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
-      padding: 24px;
-      z-index: 10000;
-      min-width: 400px;
-      max-width: 500px;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    `;
-          const isDark = document.documentElement.style.backgroundColor === "rgb(0, 0, 0)" || document.body.style.backgroundColor === "rgb(0, 0, 0)" || window.matchMedia("(prefers-color-scheme: dark)").matches;
-          if (isDark) {
-            dialog.style.background = "rgb(21, 32, 43)";
-            dialog.style.color = "rgb(231, 233, 234)";
-          }
-          dialog.innerHTML = `
-      <div style="margin-bottom: 16px;">
-        <h3 style="margin: 0 0 8px 0; font-size: 20px; font-weight: 700;">Add to Analyzer</h3>
-        <p style="margin: 0; font-size: 14px; color: ${isDark ? "rgb(139, 152, 165)" : "rgb(83, 100, 113)"};">
-          by @${tweetData.username || "unknown"}
-        </p>
-      </div>
-
-      <div style="margin-bottom: 16px; max-height: 100px; overflow-y: auto; padding: 12px; background: ${isDark ? "rgb(15, 20, 25)" : "rgb(247, 249, 249)"}; border-radius: 8px;">
-        <p style="margin: 0; font-size: 14px; line-height: 1.4;">
-          ${tweetData.text.substring(0, 200)}${tweetData.text.length > 200 ? "..." : ""}
-        </p>
-      </div>
-
-      <div style="margin-bottom: 16px;">
-        <label style="display: block; margin-bottom: 8px; font-size: 14px; font-weight: 600;">
-          Quick Tags (optional)
-        </label>
-        <input
-          type="text"
-          id="x-analyzer-tags-input"
-          placeholder="e.g., important, to-read, ai"
-          style="width: 100%; padding: 10px 12px; border: 1px solid ${isDark ? "rgb(56, 68, 77)" : "rgb(207, 217, 222)"}; border-radius: 8px; font-size: 14px; background: ${isDark ? "rgb(15, 20, 25)" : "white"}; color: ${isDark ? "rgb(231, 233, 234)" : "rgb(15, 20, 25)"};"
-        />
-        <p style="margin: 8px 0 0 0; font-size: 12px; color: ${isDark ? "rgb(139, 152, 165)" : "rgb(83, 100, 113)"};">
-          Separate tags with commas
-        </p>
-      </div>
-
-      <div style="margin-bottom: 16px;">
-        <label style="display: block; margin-bottom: 8px; font-size: 14px; font-weight: 600;">
-          Notes (optional)
-        </label>
-        <textarea
-          id="x-analyzer-notes-input"
-          placeholder="Add any notes about this tweet..."
-          style="width: 100%; padding: 10px 12px; border: 1px solid ${isDark ? "rgb(56, 68, 77)" : "rgb(207, 217, 222)"}; border-radius: 8px; font-size: 14px; min-height: 60px; resize: vertical; background: ${isDark ? "rgb(15, 20, 25)" : "white"}; color: ${isDark ? "rgb(231, 233, 234)" : "rgb(15, 20, 25)"}; font-family: inherit;"
-        ></textarea>
-      </div>
-
-      <div style="display: flex; gap: 12px; justify-content: flex-end;">
-        <button id="x-analyzer-cancel" style="padding: 10px 24px; background: transparent; border: 1px solid ${isDark ? "rgb(56, 68, 77)" : "rgb(207, 217, 222)"}; border-radius: 9999px; cursor: pointer; font-weight: 600; font-size: 14px; color: ${isDark ? "rgb(231, 233, 234)" : "rgb(15, 20, 25)"}; transition: background-color 0.2s;">
-          Cancel
-        </button>
-        <button id="x-analyzer-save" style="padding: 10px 24px; background: rgb(29, 155, 240); border: none; border-radius: 9999px; cursor: pointer; font-weight: 600; font-size: 14px; color: white; transition: background-color 0.2s;">
-          Save to Analyzer
-        </button>
-      </div>
-    `;
-          const backdrop = document.createElement("div");
-          backdrop.className = "x-analyzer-backdrop";
-          backdrop.style.cssText = `
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background: rgba(0, 0, 0, 0.5);
-      z-index: 9999;
-    `;
-          document.body.appendChild(backdrop);
-          document.body.appendChild(dialog);
-          const tagsInput = dialog.querySelector("#x-analyzer-tags-input");
-          setTimeout(() => tagsInput.focus(), 100);
-          const closeDialog = () => {
-            backdrop.remove();
-            dialog.remove();
-          };
-          backdrop.addEventListener("click", closeDialog);
-          dialog.querySelector("#x-analyzer-cancel").addEventListener("click", closeDialog);
-          dialog.querySelector("#x-analyzer-save").addEventListener("click", async () => {
-            const tags = tagsInput.value.split(",").map((t) => t.trim()).filter((t) => t.length > 0);
-            const notes = dialog.querySelector("#x-analyzer-notes-input").value.trim();
-            await this.saveToAnalyzer(tweetData, tags, notes);
-            buttonEl.style.color = "rgb(0, 186, 124)";
-            buttonEl.innerHTML = `
-        <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
-          <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/>
-        </svg>
-      `;
-            this.showToast("Saved to Analyzer! \u2713");
-            closeDialog();
-          });
-        }
-        async saveToAnalyzer(tweetData, tags, notes) {
-          try {
-            const validation = this.validateBookmarkData(tweetData);
-            if (!validation.valid) {
-              console.error("[X Extractor] Invalid bookmark data:", validation.error);
-              this.showToast("Error: " + validation.error, true);
-              return;
-            }
-            const result = await chrome.storage.local.get("manualBookmarks");
-            const manualBookmarks = result.manualBookmarks || [];
-            const bookmarkWithMetadata = {
-              ...tweetData,
-              savedAt: (/* @__PURE__ */ new Date()).toISOString(),
-              customTags: tags,
-              notes,
-              source: "manual"
-            };
-            const exists = manualBookmarks.some((b) => b.url === tweetData.url);
-            if (!exists) {
-              manualBookmarks.unshift(bookmarkWithMetadata);
-            } else {
-              const index = manualBookmarks.findIndex((b) => b.url === tweetData.url);
-              manualBookmarks[index] = {
-                ...manualBookmarks[index],
-                ...bookmarkWithMetadata
-              };
-            }
-            await chrome.storage.local.set({ manualBookmarks });
-            console.log("[X Extractor] Saved to analyzer:", tweetData.url);
-          } catch (error) {
-            console.error("[X Extractor] Error saving to analyzer:", error);
-            this.showToast("Error saving bookmark", true);
-          }
-        }
-        showToast(message, isError = false) {
-          const toast = document.createElement("div");
-          toast.style.cssText = `
-      position: fixed;
-      bottom: 24px;
-      left: 50%;
-      transform: translateX(-50%);
-      background: ${isError ? "rgb(244, 33, 46)" : "rgb(0, 186, 124)"};
-      color: white;
-      padding: 12px 24px;
-      border-radius: 9999px;
-      font-size: 14px;
-      font-weight: 600;
-      z-index: 10001;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    `;
-          toast.textContent = message;
-          document.body.appendChild(toast);
-          setTimeout(() => {
-            toast.style.transition = "opacity 0.3s";
-            toast.style.opacity = "0";
-            setTimeout(() => toast.remove(), 300);
-          }, 2e3);
         }
       };
-      new XBookmarkScanner();
+      new XAssistantContentScript();
       if (typeof module !== "undefined" && module.exports) {
-        module.exports = { XBookmarkScanner };
+        module.exports = { XAssistantContentScript };
       }
     }
   });

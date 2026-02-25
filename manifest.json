@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "X Bookmarks Analyzer",
-  "version": "0.12.3",
-  "description": "Complete bookmark management solution for X (Twitter). Features: proactive 'Add to Analyzer' button, author-centric dashboard with topic analysis, media gallery view, AI article summarization, favorites, archives, bulk operations, reading queue, engagement tracking, sentiment analysis, and comprehensive exports to Markdown, CSV, JSON, HTML, Notion, and Obsidian.",
+  "name": "X-Assistant",
+  "version": "2.0.0",
+  "description": "Extract X (Twitter) bookmarks and likes, then export reports as MD, CSV, TXT, or JSON.",
   "action": {
-    "default_popup": "popup.html",
+    "default_popup": "dist/popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",
@@ -18,6 +18,9 @@
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
+  "background": {
+    "service_worker": "dist/background.js"
+  },
   "content_scripts": [
     {
       "matches": [
@@ -27,7 +30,7 @@
         "https://*.twitter.com/*"
       ],
       "js": [
-        "content-script.js"
+        "dist/content-script.js"
       ],
       "run_at": "document_idle"
     }
@@ -51,7 +54,7 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "injected.js"
+        "dist/injected.js"
       ],
       "matches": [
         "https://x.com/*",

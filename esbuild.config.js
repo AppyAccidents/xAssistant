@@ -1,68 +1,96 @@
 const esbuild = require('esbuild');
 const path = require('path');
+const fs = require('fs');
 
 const isWatch = process.argv.includes('--watch');
 const isProd = process.argv.includes('--prod');
+const root = __dirname;
+const distDir = path.resolve(root, 'dist');
 
 const commonOptions = {
-    bundle: true,
-    format: 'iife',
-    target: ['chrome88'],
-    sourcemap: !isProd,
-    minify: isProd,
-    logLevel: 'info',
+  bundle: true,
+  format: 'iife',
+  target: ['chrome109'],
+  sourcemap: !isProd,
+  minify: isProd,
+  logLevel: 'info'
 };
 
-// Build popup.js
-const buildPopup = {
+const builds = [
+  {
     ...commonOptions,
-    entryPoints: [path.resolve(__dirname, 'src/popup/index.js')],
-    outfile: path.resolve(__dirname, 'dist/popup.js'),
-};
-
-// Build content-script.js
-const buildContentScript = {
+    entryPoints: [path.resolve(root, 'src/popup/index.js')],
+    outfile: path.resolve(distDir, 'popup.js')
+  },
+  {
     ...commonOptions,
-    entryPoints: [path.resolve(__dirname, 'src/content-script/index.js')],
-    outfile: path.resolve(__dirname, 'dist/content-script.js'),
-};
-
-// Build injected.js (simple copy for now)
-const buildInjected = {
+    entryPoints: [path.resolve(root, 'src/content-script/index.js')],
+    outfile: path.resolve(distDir, 'content-script.js')
+  },
+  {
     ...commonOptions,
-    entryPoints: [path.resolve(__dirname, 'src/injected.js')],
-    outfile: path.resolve(__dirname, 'dist/injected.js'),
-};
+    entryPoints: [path.resolve(root, 'src/injected.js')],
+    outfile: path.resolve(distDir, 'injected.js')
+  },
+  {
+    ...commonOptions,
+    entryPoints: [path.resolve(root, 'src/background/index.js')],
+    outfile: path.resolve(distDir, 'background.js')
+  }
+];
 
-async function build() {
-    try {
-        if (isWatch) {
-            // Watch mode
-            const popupCtx = await esbuild.context(buildPopup);
-            const contentCtx = await esbuild.context(buildContentScript);
-            const injectedCtx = await esbuild.context(buildInjected);
+function copyDirectoryRecursive(sourceDir, targetDir) {
+  if (!fs.existsSync(sourceDir)) {
+    return;
+  }
 
-            await Promise.all([
-                popupCtx.watch(),
-                contentCtx.watch(),
-                injectedCtx.watch(),
-            ]);
+  fs.mkdirSync(targetDir, { recursive: true });
 
-            console.log('👀 Watching for changes...');
-        } else {
-            // One-time build
-            await Promise.all([
-                esbuild.build(buildPopup),
-                esbuild.build(buildContentScript),
-                esbuild.build(buildInjected),
-            ]);
+  const entries = fs.readdirSync(sourceDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const sourcePath = path.resolve(sourceDir, entry.name);
+    const targetPath = path.resolve(targetDir, entry.name);
 
-            console.log(isProd ? '✅ Production build complete!' : '✅ Development build complete!');
-        }
-    } catch (error) {
-        console.error('Build failed:', error);
-        process.exit(1);
+    if (entry.isDirectory()) {
+      copyDirectoryRecursive(sourcePath, targetPath);
+    } else if (entry.isFile()) {
+      fs.copyFileSync(sourcePath, targetPath);
     }
+  }
 }
 
-build();
+function copyStatics() {
+  fs.mkdirSync(distDir, { recursive: true });
+  fs.copyFileSync(path.resolve(root, 'src/popup/popup.html'), path.resolve(distDir, 'popup.html'));
+  fs.copyFileSync(path.resolve(root, 'src/popup/popup.css'), path.resolve(distDir, 'popup.css'));
+  copyDirectoryRecursive(path.resolve(root, 'src/popup/assets'), path.resolve(distDir, 'popup/assets'));
+
+  const iconSourceDir = path.resolve(root, 'icons');
+  const iconDistDir = path.resolve(distDir, 'icons');
+  fs.mkdirSync(iconDistDir, { recursive: true });
+
+  for (const iconName of ['icon16.png', 'icon32.png', 'icon48.png', 'icon128.png']) {
+    fs.copyFileSync(path.resolve(iconSourceDir, iconName), path.resolve(iconDistDir, iconName));
+  }
+
+  fs.copyFileSync(path.resolve(root, 'manifest.json'), path.resolve(distDir, 'manifest.json'));
+}
+
+async function runBuild() {
+  if (isWatch) {
+    const contexts = await Promise.all(builds.map((build) => esbuild.context(build)));
+    await Promise.all(contexts.map((context) => context.watch()));
+    copyStatics();
+    console.log('Watching for changes...');
+    return;
+  }
+
+  await Promise.all(builds.map((build) => esbuild.build(build)));
+  copyStatics();
+  console.log(isProd ? 'Production build complete.' : 'Development build complete.');
+}
+
+runBuild().catch((error) => {
+  console.error('Build failed:', error);
+  process.exit(1);
+});

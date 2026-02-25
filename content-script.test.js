@@ -1,147 +1,102 @@
-const { XBookmarkScanner } = require('./content-script.js');
+const { parseNetworkPayload } = require('./src/extraction/parser-network.js');
+const { ExtractionEngine } = require('./src/extraction/engine.js');
+const { parseVisibleArticles } = require('./src/extraction/parser-dom.js');
 
-describe('XBookmarkScanner', () => {
-  let scanner;
-
+describe('Extraction modules', () => {
   beforeEach(() => {
-    document.body.innerHTML = `
-      <article data-testid="tweet">
-        <div role="group">
-          <div>
-            <span>Test User</span>
-            <span>@testuser</span>
-          </div>
-        </div>
-        <a href="https://x.com/testuser/status/123456789">Link</a>
-        <div data-testid="tweetText">This is a test tweet</div>
-        <time datetime="2023-01-01T12:00:00.000Z">Jan 1</time>
-        <div data-testid="like">1.5K</div>
-        <div data-testid="retweet">500</div>
-        <div data-testid="reply">100</div>
-      </article>
-    `;
-
-    // Reset mocks
-    jest.clearAllMocks();
-
-    scanner = new XBookmarkScanner();
+    document.body.innerHTML = '';
   });
 
-  test('should extract bookmarks from DOM', async () => {
-    const result = await scanner.scanCurrentPage();
-    expect(result.tweets).toHaveLength(1);
-
-    const tweet = result.tweets[0];
-    expect(tweet.text).toBe('This is a test tweet');
-    expect(tweet.username).toBe('testuser');
-  });
-
-  test('should parse intercepted API data', () => {
-    const mockData = {
-      user: {
-        result: {
-          timeline_v2: {
-            timeline: {
-              instructions: [
-                {
-                  type: "TimelineAddEntries",
-                  entries: [
-                    {
-                      entryId: "tweet-123",
-                      content: {
-                        itemContent: {
-                          tweet_results: {
-                            result: {
-                              legacy: {
-                                id_str: "123456789",
-                                full_text: "API Tweet Text",
-                                created_at: "Wed Oct 10 20:19:24 +0000 2018",
-                                favorite_count: 999,
-                                retweet_count: 10,
-                                reply_count: 5
-                              },
-                              core: {
-                                user_results: {
-                                  result: {
-                                    legacy: {
-                                      screen_name: "apitest",
-                                      name: "API Test User"
-                                    }
-                                  }
-                                }
-                              }
+  test('parseNetworkPayload extracts tweet, metrics, and high bitrate media', () => {
+    const payload = {
+      data: {
+        entries: [
+          {
+            content: {
+              itemContent: {
+                tweet_results: {
+                  result: {
+                    legacy: {
+                      id_str: '12345',
+                      full_text: 'Hello from network',
+                      created_at: 'Wed Oct 10 20:19:24 +0000 2018',
+                      favorite_count: 100,
+                      retweet_count: 10,
+                      reply_count: 2,
+                      extended_entities: {
+                        media: [
+                          {
+                            type: 'video',
+                            media_url_https: 'https://img.test/preview.jpg',
+                            video_info: {
+                              variants: [
+                                { content_type: 'video/mp4', bitrate: 320000, url: 'https://video-low.mp4' },
+                                { content_type: 'video/mp4', bitrate: 1500000, url: 'https://video-high.mp4' }
+                              ]
                             }
+                          }
+                        ]
+                      }
+                    },
+                    core: {
+                      user_results: {
+                        result: {
+                          legacy: {
+                            screen_name: 'tester',
+                            name: 'Tester'
                           }
                         }
                       }
                     }
-                  ]
-                }
-              ]
-            }
-          }
-        }
-      }
-    };
-
-    scanner.processInterception(mockData);
-
-    expect(scanner.interceptedTweets.size).toBe(1);
-    const tweet = scanner.interceptedTweets.get('https://x.com/apitest/status/123456789');
-
-    expect(tweet).toBeDefined();
-    expect(tweet.text).toBe('API Tweet Text');
-    expect(tweet.likes).toBe('999');
-    expect(tweet.username).toBe('apitest');
-
-    // Check if signal message was sent
-    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(expect.objectContaining({
-      type: 'X_BOOKMARKS_LOADED',
-      count: 1
-    }));
-  });
-
-  test('should extract high-quality media from API', () => {
-    const mockData = {
-      entries: [{
-        content: {
-          itemContent: {
-            tweet_results: {
-              result: {
-                legacy: {
-                  id_str: "999",
-                  full_text: "Media Tweet",
-                  created_at: "Wed Oct 10 20:19:24 +0000 2018",
-                  extended_entities: {
-                    media: [
-                      {
-                        media_url_https: "http://img.com/thumb.jpg",
-                        type: "video",
-                        video_info: {
-                          variants: [
-                            { bitrate: 0, content_type: "application/x-mpegURL", url: "http://m3u8" },
-                            { bitrate: 832000, content_type: "video/mp4", url: "http://video_low.mp4" },
-                            { bitrate: 2176000, content_type: "video/mp4", url: "http://video_high.mp4" }
-                          ]
-                        }
-                      }
-                    ]
                   }
-                },
-                core: { user_results: { result: { legacy: { screen_name: "media_user", name: "User" } } } }
+                }
               }
             }
           }
-        }
-      }]
+        ]
+      }
     };
 
-    scanner.processInterception(mockData);
-    const tweet = scanner.interceptedTweets.get('https://x.com/media_user/status/999');
+    const records = parseNetworkPayload(payload, 'https://x.com/i/api/graphql/Likes');
+    expect(records).toHaveLength(1);
+    expect(records[0].url).toBe('https://x.com/tester/status/12345');
+    expect(records[0].scope).toBe('like');
+    expect(records[0].media[0].url).toBe('https://video-high.mp4');
+  });
 
-    expect(tweet.media).toBeDefined();
-    expect(tweet.media).toHaveLength(1);
-    expect(tweet.media[0].type).toBe('video');
-    expect(tweet.media[0].url).toBe('http://video_high.mp4'); // Should pick highest bitrate
+  test('parseVisibleArticles extracts record data from DOM', () => {
+    document.body.innerHTML = `
+      <article>
+        <a href="https://x.com/tester/status/987">tweet</a>
+        <span>Tester</span>
+        <span>@tester</span>
+        <div data-testid="tweetText">DOM text</div>
+        <time datetime="2024-01-01T00:00:00.000Z">Jan 1</time>
+        <div data-testid="like">1.2K</div>
+        <div data-testid="retweet">23</div>
+        <div data-testid="reply">8</div>
+      </article>
+    `;
+
+    const result = parseVisibleArticles('bookmarks', '/i/bookmarks');
+    expect(result.records).toHaveLength(1);
+    expect(result.records[0].metrics.likes).toBe(1200);
+    expect(result.records[0].author.username).toBe('tester');
+  });
+
+  test('ExtractionEngine throws route mismatch', async () => {
+    window.history.pushState({}, '', '/i/bookmarks');
+    const engine = new ExtractionEngine({ maxLoops: 1, stableLoops: 1, scrollDelay: 1 });
+
+    await expect(
+      engine.extract({
+        scope: 'likes',
+        mode: 'full',
+        runId: 'run-1',
+        getNetworkRecords: () => [],
+        isCancelled: () => false,
+        onProgress: jest.fn()
+      })
+    ).rejects.toThrow('Route mismatch');
   });
 });

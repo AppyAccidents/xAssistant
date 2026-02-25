@@ -2,7 +2,7 @@
   "name": "xbookmarksanalyzer",
   "version": "1.0.0",
   "description": "![Version](https://img.shields.io/badge/version-0.12.3-blue.svg) ![Status](https://img.shields.io/badge/status-beta-yellow.svg)",
-  "main": "background.js",
+  "main": "dist/background.js",
   "scripts": {
     "build": "node esbuild.config.js",
     "build:watch": "node esbuild.config.js --watch",
