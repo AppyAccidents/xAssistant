@@ -171,6 +171,26 @@ select {
   cursor: not-allowed;
 }
 
+.action-attention {
+  border-color: rgba(251, 138, 16, 0.92);
+  box-shadow: inset 0 0 0 1px rgba(251, 138, 16, 0.26), 0 0 0 1px rgba(251, 138, 16, 0.2);
+  animation: export-pulse 900ms ease-in-out infinite;
+}
+
+@keyframes export-pulse {
+  0% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-1px);
+  }
+
+  100% {
+    transform: translateY(0);
+  }
+}
+
 .progress-row {
   margin-top: 10px;
   display: grid;
@@ -209,6 +229,61 @@ progress::-moz-progress-bar {
 
 .row {
   margin-bottom: 10px;
+}
+
+.guide-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  background: rgba(3, 3, 4, 0.78);
+  z-index: 10;
+}
+
+.guide-overlay[hidden] {
+  display: none;
+}
+
+.guide-card {
+  width: 100%;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, rgba(20, 22, 30, 0.99) 0%, rgba(10, 12, 15, 0.99) 100%);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+  padding: 14px;
+}
+
+.guide-kicker {
+  color: var(--secondary);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-size: 11px;
+  margin-bottom: 8px;
+}
+
+.guide-card h2 {
+  margin-bottom: 8px;
+}
+
+#guideBody {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.guide-step-label {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.guide-actions {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 
 #popupRoot.state-running #statusText {

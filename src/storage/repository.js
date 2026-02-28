@@ -3,6 +3,7 @@ const {
   STORAGE_VERSION,
   getDefaultState,
   validateStorageStateV2,
+  normalizeSettings,
   normalizeTweetRecord,
   validateTweetRecordV2
 } = require('../core/contracts/index.js');
@@ -18,7 +19,10 @@ class StorageRepository {
     const existingState = result[STATE_KEY];
 
     if (existingState && existingState.storageVersion === STORAGE_VERSION) {
-      return existingState;
+      const validation = validateStorageStateV2(existingState);
+      if (validation.valid) {
+        return existingState;
+      }
     }
 
     const migrated = migrateLegacyStorage(result);
@@ -49,14 +53,17 @@ class StorageRepository {
 
   async updateSettings(partialSettings = {}) {
     const state = await this.loadState();
-    const username = typeof partialSettings.username === 'string'
-      ? partialSettings.username
-      : state.settings.username;
-
-    state.settings = {
-      ...state.settings,
-      username
-    };
+    state.settings = normalizeSettings({
+      username: typeof partialSettings.username === 'string'
+        ? partialSettings.username
+        : state.settings.username,
+      onboardingSeen: typeof partialSettings.onboardingSeen === 'boolean'
+        ? partialSettings.onboardingSeen
+        : state.settings.onboardingSeen,
+      guideVersion: Number.isInteger(partialSettings.guideVersion)
+        ? partialSettings.guideVersion
+        : state.settings.guideVersion
+    });
 
     await this.saveState(state);
     return state.settings;

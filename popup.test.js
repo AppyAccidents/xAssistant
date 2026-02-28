@@ -17,6 +17,15 @@ function setupDom() {
         <option value="json">JSON</option>
       </select>
       <button id="exportBtn"></button>
+      <section id="guideOverlay" hidden>
+        <h2 id="guideTitle"></h2>
+        <p id="guideBody"></p>
+        <p id="guideStepLabel"></p>
+        <button id="guideBackBtn"></button>
+        <button id="guideSkipBtn"></button>
+        <button id="guideNextBtn"></button>
+        <button id="guideDoneBtn"></button>
+      </section>
     </main>
   `;
 }
@@ -27,7 +36,10 @@ describe('PopupApp minimal flow', () => {
 
     chrome.runtime.sendMessage.mockImplementation((message, callback) => {
       if (message.type === 'XA_GET_SETTINGS') {
-        callback({ success: true, settings: { username: 'user' } });
+        callback({
+          success: true,
+          settings: { username: 'user', onboardingSeen: true, guideVersion: 1 }
+        });
         return;
       }
 
@@ -37,7 +49,18 @@ describe('PopupApp minimal flow', () => {
       }
 
       if (message.type === 'XA_SAVE_SETTINGS') {
-        callback({ success: true, settings: { username: message.payload.username } });
+        callback({
+          success: true,
+          settings: {
+            username: message.payload.username || 'user',
+            onboardingSeen: typeof message.payload.onboardingSeen === 'boolean'
+              ? message.payload.onboardingSeen
+              : true,
+            guideVersion: Number.isInteger(message.payload.guideVersion)
+              ? message.payload.guideVersion
+              : 1
+          }
+        });
         return;
       }
 
@@ -69,6 +92,14 @@ describe('PopupApp minimal flow', () => {
       'usernameInput',
       'exportFormat',
       'exportBtn',
+      'guideOverlay',
+      'guideTitle',
+      'guideBody',
+      'guideStepLabel',
+      'guideBackBtn',
+      'guideSkipBtn',
+      'guideNextBtn',
+      'guideDoneBtn',
       'statusText',
       'progressBar',
       'progressLabel'
@@ -137,6 +168,99 @@ describe('PopupApp minimal flow', () => {
     expect(document.getElementById('statusText').textContent).toContain('Scanning');
     expect(document.getElementById('progressBar').value).toBeGreaterThan(0);
     expect(document.getElementById('progressLabel').textContent).toContain('%');
+  });
+
+  test('shows onboarding wizard when onboarding is not seen', async () => {
+    chrome.runtime.sendMessage.mockImplementation((message, callback) => {
+      if (message.type === 'XA_GET_SETTINGS') {
+        callback({
+          success: true,
+          settings: { username: '', onboardingSeen: false, guideVersion: 1 }
+        });
+        return;
+      }
+      if (message.type === 'DATA_QUERY') {
+        callback({ success: true, records: [], total: 0 });
+        return;
+      }
+      callback({ success: true, settings: {} });
+    });
+
+    new PopupApp();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(document.getElementById('guideOverlay').hidden).toBe(false);
+    expect(document.getElementById('guideTitle').textContent).toContain('Choose extraction scope');
+  });
+
+  test('persists guide completion on got it', async () => {
+    chrome.runtime.sendMessage.mockImplementation((message, callback) => {
+      if (message.type === 'XA_GET_SETTINGS') {
+        callback({
+          success: true,
+          settings: { username: '', onboardingSeen: false, guideVersion: 1 }
+        });
+        return;
+      }
+      if (message.type === 'DATA_QUERY') {
+        callback({ success: true, records: [], total: 0 });
+        return;
+      }
+      if (message.type === 'XA_SAVE_SETTINGS') {
+        callback({
+          success: true,
+          settings: { username: '', onboardingSeen: true, guideVersion: 1 }
+        });
+        return;
+      }
+      callback({ success: true });
+    });
+
+    new PopupApp();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    chrome.runtime.sendMessage.mockClear();
+    document.getElementById('guideNextBtn').click();
+    document.getElementById('guideNextBtn').click();
+    document.getElementById('guideDoneBtn').click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const saveCalls = chrome.runtime.sendMessage.mock.calls.filter(
+      ([message]) => message.type === 'XA_SAVE_SETTINGS'
+    );
+
+    expect(saveCalls.length).toBeGreaterThan(0);
+    expect(saveCalls[saveCalls.length - 1][0].payload).toEqual({
+      onboardingSeen: true,
+      guideVersion: 1
+    });
+    expect(document.getElementById('guideOverlay').hidden).toBe(true);
+  });
+
+  test('shows ready-to-export CTA on extraction completion with records', async () => {
+    const app = new PopupApp();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    app.handleRuntimeEvent({
+      type: 'EXTRACTION_COMPLETE',
+      totalCount: 5
+    });
+
+    expect(document.getElementById('statusText').textContent).toContain('Ready to export');
+    expect(document.getElementById('exportBtn').classList.contains('action-attention')).toBe(true);
+  });
+
+  test('shows no-records guidance when extraction returns zero records', async () => {
+    const app = new PopupApp();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    app.handleRuntimeEvent({
+      type: 'EXTRACTION_COMPLETE',
+      totalCount: 0
+    });
+
+    expect(document.getElementById('statusText').textContent).toContain('No records found');
+    expect(document.getElementById('exportBtn').classList.contains('action-attention')).toBe(false);
   });
 });
 

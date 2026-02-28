@@ -43,5 +43,7 @@ describe('contracts', () => {
     const state = getDefaultState();
     const validation = validateStorageStateV2(state);
     expect(validation.valid).toBe(true);
+    expect(state.settings.onboardingSeen).toBe(false);
+    expect(state.settings.guideVersion).toBe(1);
   });
 });

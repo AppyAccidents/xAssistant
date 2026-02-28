@@ -2,6 +2,7 @@ const {
   STORAGE_VERSION,
   getDefaultState,
   normalizeTweetRecord,
+  normalizeSettings,
   extractTweetIdFromUrl
 } = require('../core/contracts/index.js');
 
@@ -47,9 +48,19 @@ function legacyBookmarkToRecord(bookmark, scope = 'bookmark') {
 
 function migrateLegacyStorage(rawStorage = {}) {
   const state = getDefaultState();
+  const storedState = rawStorage[STATE_KEY];
 
-  if (rawStorage[STATE_KEY] && rawStorage[STATE_KEY].storageVersion === STORAGE_VERSION) {
-    return rawStorage[STATE_KEY];
+  if (storedState && storedState.storageVersion === STORAGE_VERSION) {
+    return {
+      ...state,
+      ...storedState,
+      recordsById: storedState.recordsById && typeof storedState.recordsById === 'object'
+        ? storedState.recordsById
+        : {},
+      recordOrder: Array.isArray(storedState.recordOrder) ? storedState.recordOrder : [],
+      settings: normalizeSettings(storedState.settings || {}),
+      runs: Array.isArray(storedState.runs) ? storedState.runs : []
+    };
   }
 
   const legacyBookmarks = [];

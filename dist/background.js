@@ -199,14 +199,20 @@
     "src/core/contracts/storage.js"(exports, module) {
       var STORAGE_VERSION = 2;
       var STATE_KEY = "xAssistantState";
+      var ONBOARDING_GUIDE_VERSION = 1;
+      function normalizeSettings(settings = {}) {
+        return {
+          username: typeof settings.username === "string" ? settings.username : "",
+          onboardingSeen: settings.onboardingSeen === true,
+          guideVersion: Number.isInteger(settings.guideVersion) ? settings.guideVersion : ONBOARDING_GUIDE_VERSION
+        };
+      }
       function getDefaultState() {
         return {
           storageVersion: STORAGE_VERSION,
           recordsById: {},
           recordOrder: [],
-          settings: {
-            username: ""
-          },
+          settings: normalizeSettings(),
           runs: []
         };
       }
@@ -229,6 +235,12 @@
         if (typeof state.settings.username !== "string") {
           return { valid: false, error: "settings.username must be a string" };
         }
+        if (typeof state.settings.onboardingSeen !== "boolean") {
+          return { valid: false, error: "settings.onboardingSeen must be a boolean" };
+        }
+        if (!Number.isInteger(state.settings.guideVersion)) {
+          return { valid: false, error: "settings.guideVersion must be an integer" };
+        }
         if (!Array.isArray(state.runs)) {
           return { valid: false, error: "runs must be an array" };
         }
@@ -237,6 +249,8 @@
       module.exports = {
         STORAGE_VERSION,
         STATE_KEY,
+        ONBOARDING_GUIDE_VERSION,
+        normalizeSettings,
         getDefaultState,
         validateStorageStateV2
       };
@@ -264,6 +278,7 @@
         STORAGE_VERSION,
         getDefaultState,
         normalizeTweetRecord,
+        normalizeSettings,
         extractTweetIdFromUrl
       } = require_contracts();
       function inferScopeFromLegacyBookmark(bookmark) {
@@ -304,8 +319,16 @@
       }
       function migrateLegacyStorage(rawStorage = {}) {
         const state = getDefaultState();
-        if (rawStorage[STATE_KEY] && rawStorage[STATE_KEY].storageVersion === STORAGE_VERSION) {
-          return rawStorage[STATE_KEY];
+        const storedState = rawStorage[STATE_KEY];
+        if (storedState && storedState.storageVersion === STORAGE_VERSION) {
+          return {
+            ...state,
+            ...storedState,
+            recordsById: storedState.recordsById && typeof storedState.recordsById === "object" ? storedState.recordsById : {},
+            recordOrder: Array.isArray(storedState.recordOrder) ? storedState.recordOrder : [],
+            settings: normalizeSettings(storedState.settings || {}),
+            runs: Array.isArray(storedState.runs) ? storedState.runs : []
+          };
         }
         const legacyBookmarks = [];
         if (rawStorage.lastExtraction && Array.isArray(rawStorage.lastExtraction.bookmarks)) {
@@ -344,6 +367,7 @@
         STORAGE_VERSION,
         getDefaultState,
         validateStorageStateV2,
+        normalizeSettings,
         normalizeTweetRecord,
         validateTweetRecordV2
       } = require_contracts();
@@ -356,7 +380,10 @@
           const result = await this.storage.get([STATE_KEY, "lastExtraction", "manualBookmarks"]);
           const existingState = result[STATE_KEY];
           if (existingState && existingState.storageVersion === STORAGE_VERSION) {
-            return existingState;
+            const validation = validateStorageStateV2(existingState);
+            if (validation.valid) {
+              return existingState;
+            }
           }
           const migrated = migrateLegacyStorage(result);
           await this.storage.set({ [STATE_KEY]: migrated });
@@ -380,11 +407,11 @@
         }
         async updateSettings(partialSettings = {}) {
           const state = await this.loadState();
-          const username = typeof partialSettings.username === "string" ? partialSettings.username : state.settings.username;
-          state.settings = {
-            ...state.settings,
-            username
-          };
+          state.settings = normalizeSettings({
+            username: typeof partialSettings.username === "string" ? partialSettings.username : state.settings.username,
+            onboardingSeen: typeof partialSettings.onboardingSeen === "boolean" ? partialSettings.onboardingSeen : state.settings.onboardingSeen,
+            guideVersion: Number.isInteger(partialSettings.guideVersion) ? partialSettings.guideVersion : state.settings.guideVersion
+          });
           await this.saveState(state);
           return state.settings;
         }

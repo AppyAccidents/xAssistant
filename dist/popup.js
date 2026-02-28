@@ -273,16 +273,35 @@
       function normalizeUsername(rawValue) {
         return String(rawValue || "").trim().replace(/^@+/, "");
       }
+      var GUIDE_VERSION = 1;
+      var GUIDE_STEPS = [
+        {
+          title: "Choose extraction scope",
+          body: "Pick what to collect: Bookmarks, Likes, or Both."
+        },
+        {
+          title: "Set username for likes",
+          body: "Likes and Both need a username. Enter it once and we will reuse it."
+        },
+        {
+          title: "Extract, then export",
+          body: "Run extraction first, then click Export Report to download your data."
+        }
+      ];
       var PopupApp = class {
         constructor() {
           this.state = {
             settings: {
-              username: ""
+              username: "",
+              onboardingSeen: false,
+              guideVersion: GUIDE_VERSION
             },
             progress: 0,
             running: false,
-            recordCount: 0
+            recordCount: 0,
+            guideStep: 0
           };
+          this.exportCtaTimer = null;
           this.elements = {
             appRoot: document.getElementById("popupRoot"),
             statusText: document.getElementById("statusText"),
@@ -293,7 +312,15 @@
             extractBothBtn: document.getElementById("extractBothBtn"),
             usernameInput: document.getElementById("usernameInput"),
             exportFormat: document.getElementById("exportFormat"),
-            exportBtn: document.getElementById("exportBtn")
+            exportBtn: document.getElementById("exportBtn"),
+            guideOverlay: document.getElementById("guideOverlay"),
+            guideTitle: document.getElementById("guideTitle"),
+            guideBody: document.getElementById("guideBody"),
+            guideStepLabel: document.getElementById("guideStepLabel"),
+            guideBackBtn: document.getElementById("guideBackBtn"),
+            guideSkipBtn: document.getElementById("guideSkipBtn"),
+            guideNextBtn: document.getElementById("guideNextBtn"),
+            guideDoneBtn: document.getElementById("guideDoneBtn")
           };
           this.bindEvents();
           this.initialize();
@@ -304,6 +331,9 @@
           await this.refreshRecordCount();
           this.setProgress(0);
           this.setStatus(`Ready (${this.state.recordCount} records)`, "idle");
+          if (this.shouldShowOnboardingGuide()) {
+            this.openGuide();
+          }
         }
         bindEvents() {
           this.elements.extractBookmarksBtn.addEventListener("click", () => this.startExtraction("bookmarks"));
@@ -321,6 +351,18 @@
               return;
             this.handleRuntimeEvent(message);
           });
+          if (this.elements.guideNextBtn) {
+            this.elements.guideNextBtn.addEventListener("click", () => this.nextGuideStep());
+          }
+          if (this.elements.guideBackBtn) {
+            this.elements.guideBackBtn.addEventListener("click", () => this.previousGuideStep());
+          }
+          if (this.elements.guideSkipBtn) {
+            this.elements.guideSkipBtn.addEventListener("click", () => this.dismissGuide());
+          }
+          if (this.elements.guideDoneBtn) {
+            this.elements.guideDoneBtn.addEventListener("click", () => this.dismissGuide());
+          }
         }
         setStatus(text, tone = "idle") {
           this.elements.statusText.textContent = text;
@@ -355,6 +397,7 @@
           this.state.running = isRunning;
           if (isRunning) {
             this.setAppState("running");
+            this.clearExportCta();
           }
           this.elements.extractBookmarksBtn.disabled = isRunning;
           this.elements.extractLikesBtn.disabled = isRunning;
@@ -366,6 +409,12 @@
           const response = await sendRuntimeMessage({ type: MESSAGE_TYPES.XA_GET_SETTINGS }).catch(() => ({ success: false }));
           if (response.success && response.settings) {
             this.state.settings.username = normalizeUsername(response.settings.username || "");
+            if (typeof response.settings.onboardingSeen === "boolean") {
+              this.state.settings.onboardingSeen = response.settings.onboardingSeen;
+            }
+            if (Number.isInteger(response.settings.guideVersion)) {
+              this.state.settings.guideVersion = response.settings.guideVersion;
+            }
           }
           this.elements.usernameInput.value = this.state.settings.username ? `@${this.state.settings.username}` : "";
         }
@@ -382,6 +431,59 @@
           this.elements.usernameInput.value = username ? `@${username}` : "";
           return true;
         }
+        shouldShowOnboardingGuide() {
+          return !this.state.settings.onboardingSeen || this.state.settings.guideVersion !== GUIDE_VERSION;
+        }
+        openGuide() {
+          if (!this.elements.guideOverlay)
+            return;
+          this.state.guideStep = 0;
+          this.elements.guideOverlay.hidden = false;
+          this.renderGuideStep();
+        }
+        renderGuideStep() {
+          if (!this.elements.guideOverlay)
+            return;
+          const step = GUIDE_STEPS[this.state.guideStep];
+          if (!step)
+            return;
+          this.elements.guideTitle.textContent = step.title;
+          this.elements.guideBody.textContent = step.body;
+          this.elements.guideStepLabel.textContent = `Step ${this.state.guideStep + 1} of ${GUIDE_STEPS.length}`;
+          this.elements.guideBackBtn.hidden = this.state.guideStep === 0;
+          this.elements.guideNextBtn.hidden = this.state.guideStep >= GUIDE_STEPS.length - 1;
+          this.elements.guideDoneBtn.hidden = this.state.guideStep < GUIDE_STEPS.length - 1;
+        }
+        nextGuideStep() {
+          if (this.state.guideStep >= GUIDE_STEPS.length - 1)
+            return;
+          this.state.guideStep += 1;
+          this.renderGuideStep();
+        }
+        previousGuideStep() {
+          if (this.state.guideStep <= 0)
+            return;
+          this.state.guideStep -= 1;
+          this.renderGuideStep();
+        }
+        async dismissGuide() {
+          if (this.elements.guideOverlay) {
+            this.elements.guideOverlay.hidden = true;
+          }
+          const response = await sendRuntimeMessage({
+            type: MESSAGE_TYPES.XA_SAVE_SETTINGS,
+            payload: {
+              onboardingSeen: true,
+              guideVersion: GUIDE_VERSION
+            }
+          }).catch((error) => ({ success: false, error: error.message }));
+          if (!response.success) {
+            this.setStatus("Guide state was not saved", "error");
+            return;
+          }
+          this.state.settings.onboardingSeen = true;
+          this.state.settings.guideVersion = GUIDE_VERSION;
+        }
         async refreshRecordCount() {
           const response = await sendRuntimeMessage({
             type: MESSAGE_TYPES.DATA_QUERY,
@@ -397,6 +499,32 @@
         }
         requiresUsername(scope) {
           return scope === "likes" || scope === "all";
+        }
+        clearExportCta() {
+          if (this.exportCtaTimer) {
+            clearTimeout(this.exportCtaTimer);
+            this.exportCtaTimer = null;
+          }
+          this.elements.exportBtn.classList.remove("action-attention");
+        }
+        pulseExportCta() {
+          this.clearExportCta();
+          this.elements.exportBtn.classList.add("action-attention");
+          this.exportCtaTimer = setTimeout(() => {
+            this.clearExportCta();
+          }, 3e3);
+        }
+        handleExtractionCompletion(totalCount) {
+          this.setProgress(100);
+          this.refreshRecordCount().catch(() => {
+          });
+          this.setRunning(false);
+          if (totalCount > 0) {
+            this.setStatus(`Extraction complete (${totalCount} records). Ready to export.`, "success");
+            this.pulseExportCta();
+            return;
+          }
+          this.setStatus("No records found. Try scrolling and extract again.", "error");
         }
         async startExtraction(scope) {
           if (this.state.running)
@@ -424,10 +552,7 @@
             this.setProgress(0);
             return;
           }
-          this.setProgress(100);
-          await this.refreshRecordCount();
-          this.setStatus(`Extraction complete (${response.totalCount || 0})`, "success");
-          this.setRunning(false);
+          this.handleExtractionCompletion(Number(response.totalCount || 0));
         }
         exportDataForFormat(records, format) {
           if (format === "json") {
@@ -507,10 +632,7 @@
             return;
           }
           if (message.type === MESSAGE_TYPES.EXTRACTION_COMPLETE) {
-            this.setProgress(100);
-            this.setStatus(`Extraction complete (${message.totalCount || 0})`, "success");
-            this.refreshRecordCount();
-            this.setRunning(false);
+            this.handleExtractionCompletion(Number(message.totalCount || 0));
           }
         }
       };

@@ -51,6 +51,21 @@
       </div>
       <button id="exportBtn" class="action action-primary" type="button">Export Report</button>
     </section>
+
+    <section id="guideOverlay" class="guide-overlay" hidden>
+      <div class="guide-card" role="dialog" aria-modal="true" aria-labelledby="guideTitle">
+        <p class="guide-kicker">Quick Start</p>
+        <h2 id="guideTitle">Step 1</h2>
+        <p id="guideBody"></p>
+        <p id="guideStepLabel" class="guide-step-label"></p>
+        <div class="guide-actions">
+          <button id="guideBackBtn" class="action" type="button">Back</button>
+          <button id="guideSkipBtn" class="action" type="button">Skip</button>
+          <button id="guideNextBtn" class="action action-primary" type="button">Next</button>
+          <button id="guideDoneBtn" class="action action-primary" type="button">Got it</button>
+        </div>
+      </div>
+    </section>
   </main>
 
   <script src="popup.js"></script>

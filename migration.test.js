@@ -33,5 +33,28 @@ describe('storage migration', () => {
     expect(state.recordOrder.length).toBe(2);
     expect(Object.keys(state.recordsById).length).toBe(2);
     expect(state.settings.username).toBe('');
+    expect(state.settings.onboardingSeen).toBe(false);
+    expect(state.settings.guideVersion).toBe(1);
+  });
+
+  test('normalizes existing v2 settings when onboarding fields are missing', () => {
+    const current = {
+      xAssistantState: {
+        storageVersion: 2,
+        recordsById: {},
+        recordOrder: [],
+        settings: {
+          username: 'tester'
+        },
+        runs: []
+      }
+    };
+
+    const state = migrateLegacyStorage(current);
+
+    expect(state.storageVersion).toBe(2);
+    expect(state.settings.username).toBe('tester');
+    expect(state.settings.onboardingSeen).toBe(false);
+    expect(state.settings.guideVersion).toBe(1);
   });
 });
