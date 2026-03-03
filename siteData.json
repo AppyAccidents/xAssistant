@@ -2,7 +2,7 @@
   "id": "xbookmarks",
   "title": "X Bookmarks Analyzer",
   "group_id": "group-web",
-  "platform_tag": "Extension",
+  "platform_tag": ["Extension"],
   "status": "coming_soon",
   "description": "Turns bookmark chaos into a command center: extract, sort, analyze, export, and finally remember why you bookmarked that 3 a.m. thread about ergonomic spoons.",
   "vibe_tone": "cyan",
