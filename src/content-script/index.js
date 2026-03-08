@@ -4,15 +4,23 @@ const {
 } = require('../core/contracts/messages.js');
 const {
   ExtractionEngine,
-  parseNetworkPayload,
   BoundedMap,
-  detectScopeFromUrl
+  detectContextFromUrl
 } = require('../extraction/index.js');
+const { getPlatformAdapter } = require('../platforms/index.js');
 
 class XAssistantContentScript {
   constructor() {
     this.engine = new ExtractionEngine();
-    this.networkCache = new BoundedMap(5000);
+    this.networkCaches = {
+      x: {
+        bookmark: new BoundedMap(5000),
+        like: new BoundedMap(5000)
+      },
+      instagram: {
+        saved: new BoundedMap(3000)
+      }
+    };
     this.runTokens = new Map();
 
     this.installInjectedInterceptor();
@@ -29,23 +37,36 @@ class XAssistantContentScript {
     (document.head || document.documentElement).appendChild(script);
   }
 
+  getNetworkRecords(platform, target) {
+    const cache = this.networkCaches[platform]?.[target];
+    return cache ? cache.values() : [];
+  }
+
   setupNetworkListener() {
     window.addEventListener('x-assistant-network', (event) => {
       const detail = event.detail || {};
       if (!detail.payload) return;
 
-      const parsed = parseNetworkPayload(detail.payload, detail.url || '');
+      const context = detectContextFromUrl(window.location.href);
+      const adapter = getPlatformAdapter(context.platform);
+      if (!adapter || typeof adapter.parseNetwork !== 'function') return;
+
+      const parsed = adapter.parseNetwork(detail.payload, detail.url || '');
       parsed.forEach((record) => {
-        this.networkCache.set(record.id, record);
+        const cache = this.networkCaches[record.platform]?.[record.target];
+        if (cache) {
+          cache.set(record.id, record);
+        }
       });
 
       chrome.runtime.sendMessage({
         type: MESSAGE_TYPES.EXTRACTION_PROGRESS,
-        scope: detectScopeFromUrl(window.location.href),
+        platform: context.platform,
+        target: context.target,
         scannedCount: 0,
-        capturedCount: this.networkCache.size,
+        capturedCount: parsed.length,
         cursorState: { loop: 0, stableCount: 0 },
-        status: `Network captured ${parsed.length} items`,
+        status: parsed.length > 0 ? `Network captured ${parsed.length} items` : 'Listening for network records...',
         __relay: false
       }).catch(() => {});
     });
@@ -80,16 +101,18 @@ class XAssistantContentScript {
       throw error;
     }
 
-    const { scope, mode, runId } = validation.value;
+      const { platform, target, mode, runId, input } = validation.value;
     const token = { cancelled: false };
     this.runTokens.set(runId, token);
 
     try {
       const result = await this.engine.extract({
-        scope,
+        platform,
+        target,
         mode,
         runId,
-        getNetworkRecords: () => this.networkCache.values(),
+        input,
+        getNetworkRecords: () => this.getNetworkRecords(platform, target),
         isCancelled: () => token.cancelled,
         onProgress: (progress) => {
           chrome.runtime.sendMessage({ ...progress, __relay: false }).catch(() => {});
@@ -99,7 +122,8 @@ class XAssistantContentScript {
       const completion = {
         type: MESSAGE_TYPES.EXTRACTION_COMPLETE,
         runId: result.runId,
-        scope: result.scope,
+        platform: result.platform,
+        target: result.target,
         totalCount: result.totalCount,
         durationMs: result.durationMs,
         records: result.records,
@@ -112,7 +136,8 @@ class XAssistantContentScript {
       const failure = {
         type: MESSAGE_TYPES.EXTRACTION_ERROR,
         runId,
-        scope,
+        platform,
+        target,
         code: error.code || 'EXTRACTION_FAILED',
         message: error.message,
         recoverable: error.code !== 'ROUTE_MISMATCH',

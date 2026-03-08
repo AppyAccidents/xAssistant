@@ -1,13 +1,11 @@
-const { normalizeTweetRecord } = require('../core/contracts/record.js');
-const { scopeToRecordScope } = require('./route-detector.js');
+const { normalizeRecord } = require('../core/contracts/record.js');
 
-function normalizeExtractedTweet(rawTweet, scope, sourceMeta = {}) {
-  return normalizeTweetRecord({
-    ...rawTweet,
-    scope: scopeToRecordScope(scope),
+function normalizeExtractedRecord(rawRecord, sourceMeta = {}) {
+  return normalizeRecord({
+    ...rawRecord,
     source: {
-      route: sourceMeta.route || '',
-      via: sourceMeta.via || 'dom'
+      route: sourceMeta.route || rawRecord.source?.route || '',
+      via: sourceMeta.via || rawRecord.source?.via || 'dom'
     }
   });
 }
@@ -21,6 +19,7 @@ function dedupeRecords(records) {
 }
 
 module.exports = {
-  normalizeExtractedTweet,
-  dedupeRecords
+  normalizeExtractedRecord,
+  dedupeRecords,
+  normalizeExtractedTweet: normalizeExtractedRecord
 };

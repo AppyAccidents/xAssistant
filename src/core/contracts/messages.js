@@ -1,6 +1,10 @@
-const EXTRACTION_SCOPES = ['bookmarks', 'likes'];
-const QUERY_SCOPES = ['bookmarks', 'likes', 'all'];
 const EXTRACTION_MODES = ['full', 'visible'];
+const EXTRACTION_TARGETS = {
+  x: ['bookmark', 'like', 'all'],
+  instagram: ['saved', 'all']
+};
+const QUERY_PLATFORMS = ['x', 'instagram', 'all'];
+const QUERY_TARGETS = ['bookmark', 'like', 'saved', 'all'];
 
 const MESSAGE_TYPES = {
   EXTRACTION_START: 'EXTRACTION_START',
@@ -18,13 +22,24 @@ function isPlainObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
+function getSupportedTargets(platform) {
+  return EXTRACTION_TARGETS[platform] || [];
+}
+
 function validateExtractionStart(payload) {
   if (!isPlainObject(payload)) {
     return { valid: false, error: 'Payload must be an object' };
   }
 
-  if (!EXTRACTION_SCOPES.includes(payload.scope)) {
-    return { valid: false, error: 'scope must be bookmarks or likes' };
+  const platform = payload.platform === 'instagram' ? 'instagram' : payload.platform === 'x' ? 'x' : '';
+  if (!platform) {
+    return { valid: false, error: 'platform must be x or instagram' };
+  }
+
+  const supportedTargets = getSupportedTargets(platform);
+  const target = typeof payload.target === 'string' ? payload.target : '';
+  if (!supportedTargets.includes(target)) {
+    return { valid: false, error: `target must be one of: ${supportedTargets.join(', ')}` };
   }
 
   const mode = payload.mode || 'full';
@@ -32,11 +47,15 @@ function validateExtractionStart(payload) {
     return { valid: false, error: 'mode must be full or visible' };
   }
 
+  const input = isPlainObject(payload.input) ? payload.input : {};
+
   return {
     valid: true,
     value: {
-      scope: payload.scope,
+      platform,
+      target,
       mode,
+      input,
       runId: typeof payload.runId === 'string' ? payload.runId : `run-${Date.now()}`
     }
   };
@@ -47,14 +66,18 @@ function validateDataQuery(payload) {
     return { valid: false, error: 'Payload must be an object' };
   }
 
-  const scope = payload.scope || 'all';
-  if (!QUERY_SCOPES.includes(scope)) {
-    return { valid: false, error: 'scope must be bookmarks, likes, or all' };
+  const platform = payload.platform || 'all';
+  if (!QUERY_PLATFORMS.includes(platform)) {
+    return { valid: false, error: 'platform must be x, instagram, or all' };
+  }
+
+  const target = payload.target || 'all';
+  if (!QUERY_TARGETS.includes(target)) {
+    return { valid: false, error: 'target must be bookmark, like, saved, or all' };
   }
 
   const filter = isPlainObject(payload.filter) ? payload.filter : {};
   const sort = typeof payload.sort === 'string' ? payload.sort : 'capturedAt:desc';
-
   const page = isPlainObject(payload.page) ? payload.page : {};
   const offset = Number.isInteger(page.offset) && page.offset >= 0 ? page.offset : 0;
   const limit = Number.isInteger(page.limit) && page.limit > 0 ? page.limit : 5000;
@@ -62,7 +85,8 @@ function validateDataQuery(payload) {
   return {
     valid: true,
     value: {
-      scope,
+      platform,
+      target,
       filter,
       sort,
       page: { offset, limit }
@@ -72,10 +96,12 @@ function validateDataQuery(payload) {
 
 module.exports = {
   MESSAGE_TYPES,
-  EXTRACTION_SCOPES,
-  QUERY_SCOPES,
   EXTRACTION_MODES,
+  EXTRACTION_TARGETS,
+  QUERY_PLATFORMS,
+  QUERY_TARGETS,
   validateExtractionStart,
   validateDataQuery,
+  getSupportedTargets,
   isPlainObject
 };

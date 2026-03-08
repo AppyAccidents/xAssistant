@@ -1,7 +1,7 @@
 {
-  "name": "xbookmarksanalyzer",
+  "name": "social-assistant-extension",
   "version": "1.0.0",
-  "description": "![Version](https://img.shields.io/badge/version-0.12.3-blue.svg) ![Status](https://img.shields.io/badge/status-beta-yellow.svg)",
+  "description": "Chrome extension for exporting X/Twitter bookmarks and likes plus Instagram saved posts.",
   "main": "dist/background.js",
   "scripts": {
     "build": "node esbuild.config.js",
@@ -13,7 +13,13 @@
     "type": "git",
     "url": "git+https://github.com/AppyAccidents/xbookmarksanalyzer.git"
   },
-  "keywords": [],
+  "keywords": [
+    "chrome-extension",
+    "x",
+    "twitter",
+    "instagram",
+    "export"
+  ],
   "author": "",
   "license": "ISC",
   "type": "commonjs",

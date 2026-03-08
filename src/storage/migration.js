@@ -1,26 +1,26 @@
 const {
+  STATE_KEY,
   STORAGE_VERSION,
   getDefaultState,
-  normalizeTweetRecord,
+  normalizeRecord,
   normalizeSettings,
-  extractTweetIdFromUrl
+  extractXStatusIdFromUrl
 } = require('../core/contracts/index.js');
 
-function inferScopeFromLegacyBookmark(bookmark) {
-  if (bookmark.source === 'manual' || bookmark.scope === 'bookmark') {
-    return 'bookmark';
-  }
+function inferTargetFromLegacyBookmark(bookmark) {
+  if (bookmark.scope === 'like') return 'like';
   return 'bookmark';
 }
 
-function legacyBookmarkToRecord(bookmark, scope = 'bookmark') {
-  const id = extractTweetIdFromUrl(bookmark.url || '') || bookmark.id || `legacy-${Math.random().toString(16).slice(2)}`;
-  return normalizeTweetRecord({
-    id,
+function legacyBookmarkToRecord(bookmark, target = 'bookmark') {
+  const id = extractXStatusIdFromUrl(bookmark.url || '') || bookmark.id || `legacy-${Math.random().toString(16).slice(2)}`;
+  return normalizeRecord({
+    id: `x:${id}`,
+    platform: 'x',
+    target,
     url: bookmark.url || '',
-    scope,
     capturedAt: bookmark.savedAt || bookmark.dateTime || new Date().toISOString(),
-    tweetPostedAt: bookmark.dateTime || null,
+    postedAt: bookmark.dateTime || null,
     author: {
       username: bookmark.username || '',
       displayName: bookmark.displayName || ''
@@ -35,15 +35,52 @@ function legacyBookmarkToRecord(bookmark, scope = 'bookmark') {
       : [],
     metrics: {
       likes: bookmark.likes,
-      retweets: bookmark.retweets,
       replies: bookmark.replies,
-      views: bookmark.views
+      views: bookmark.views,
+      platform: {
+        retweets: bookmark.retweets
+      }
     },
     source: {
-      route: '/i/bookmarks',
+      route: target === 'bookmark' ? '/i/bookmarks' : '/likes',
       via: bookmark.source === 'manual' ? 'dom' : 'network'
     }
   });
+}
+
+function migrateStoredV2State(storedState) {
+  const state = getDefaultState();
+  state.recordsById = {};
+
+  Object.values(storedState.recordsById || {}).forEach((legacyRecord) => {
+    const normalized = normalizeRecord({
+      ...legacyRecord,
+      platform: 'x',
+      target: legacyRecord.scope === 'like' ? 'like' : 'bookmark',
+      postedAt: legacyRecord.tweetPostedAt || legacyRecord.postedAt || null,
+      metrics: {
+        likes: legacyRecord.metrics?.likes,
+        replies: legacyRecord.metrics?.replies,
+        views: legacyRecord.metrics?.views,
+        platform: {
+          retweets: legacyRecord.metrics?.retweets
+        }
+      }
+    });
+    state.recordsById[normalized.id] = normalized;
+  });
+
+  state.recordOrder = Object.values(state.recordsById)
+    .sort((a, b) => new Date(b.capturedAt).getTime() - new Date(a.capturedAt).getTime())
+    .map((record) => record.id);
+
+  state.settings = normalizeSettings({
+    username: storedState.settings?.username || '',
+    onboardingSeen: storedState.settings?.onboardingSeen,
+    guideVersion: storedState.settings?.guideVersion
+  });
+  state.runs = Array.isArray(storedState.runs) ? storedState.runs : [];
+  return state;
 }
 
 function migrateLegacyStorage(rawStorage = {}) {
@@ -63,6 +100,10 @@ function migrateLegacyStorage(rawStorage = {}) {
     };
   }
 
+  if (storedState && storedState.storageVersion === 2) {
+    return migrateStoredV2State(storedState);
+  }
+
   const legacyBookmarks = [];
   if (rawStorage.lastExtraction && Array.isArray(rawStorage.lastExtraction.bookmarks)) {
     legacyBookmarks.push(...rawStorage.lastExtraction.bookmarks);
@@ -74,7 +115,7 @@ function migrateLegacyStorage(rawStorage = {}) {
 
   const mapped = legacyBookmarks
     .filter((bookmark) => bookmark && bookmark.url)
-    .map((bookmark) => legacyBookmarkToRecord(bookmark, inferScopeFromLegacyBookmark(bookmark)));
+    .map((bookmark) => legacyBookmarkToRecord(bookmark, inferTargetFromLegacyBookmark(bookmark)));
 
   for (const record of mapped) {
     state.recordsById[record.id] = record;
@@ -86,7 +127,8 @@ function migrateLegacyStorage(rawStorage = {}) {
 
   state.runs.push({
     runId: `migration-${Date.now()}`,
-    scope: 'all',
+    platform: 'all',
+    target: 'all',
     totalCount: state.recordOrder.length,
     durationMs: 0,
     createdAt: new Date().toISOString()
@@ -94,8 +136,6 @@ function migrateLegacyStorage(rawStorage = {}) {
 
   return state;
 }
-
-const { STATE_KEY } = require('../core/contracts/storage.js');
 
 module.exports = {
   migrateLegacyStorage,

@@ -1,6 +1,6 @@
-const { detectScopeFromUrl } = require('./route-detector.js');
-const { parseVisibleArticles } = require('./parser-dom.js');
-const { normalizeExtractedTweet, dedupeRecords } = require('./normalizer.js');
+const { detectContextFromUrl } = require('./route-detector.js');
+const { getPlatformAdapter } = require('../platforms/index.js');
+const { normalizeExtractedRecord, dedupeRecords } = require('./normalizer.js');
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -13,15 +13,12 @@ class ExtractionEngine {
     this.stableLoops = options.stableLoops || 3;
   }
 
-  collectOnce(scope, route, networkRecords = []) {
-    const domSnapshot = parseVisibleArticles(scope, route);
+  collectOnce(platform, target, route, networkRecords = []) {
+    const adapter = getPlatformAdapter(platform);
+    const domSnapshot = adapter ? adapter.parseDom(target, route) : { scannedCount: 0, records: [] };
     const all = [
-      ...domSnapshot.records.map((record) => normalizeExtractedTweet(record, scope, { route, via: 'dom' })),
-      ...networkRecords
-        .filter((record) => {
-          return scope === 'bookmarks' ? record.scope === 'bookmark' : record.scope === 'like';
-        })
-        .map((record) => normalizeExtractedTweet(record, scope, { route, via: 'network' }))
+      ...domSnapshot.records.map((record) => normalizeExtractedRecord(record, { route, via: 'dom' })),
+      ...networkRecords.map((record) => normalizeExtractedRecord(record, { route, via: record.source?.via || 'network' }))
     ];
 
     return {
@@ -30,18 +27,26 @@ class ExtractionEngine {
     };
   }
 
-  async extract({ scope, mode, runId, getNetworkRecords, onProgress, isCancelled }) {
+  async extract({ platform, target, mode, runId, input = {}, getNetworkRecords, onProgress, isCancelled }) {
     const startedAt = Date.now();
     const route = window.location.pathname;
-    const detectedScope = detectScopeFromUrl(window.location.href);
+    const detected = detectContextFromUrl(window.location.href);
+    const adapter = getPlatformAdapter(platform);
 
-    if (detectedScope !== scope) {
-      const error = new Error(`Route mismatch: expected ${scope}, got ${detectedScope}`);
+    if (!adapter) {
+      const error = new Error(`Unsupported platform: ${platform}`);
+      error.code = 'UNSUPPORTED_PLATFORM';
+      throw error;
+    }
+
+    if (detected.platform !== platform || detected.target !== target) {
+      const error = new Error(`Route mismatch: expected ${platform}/${target}, got ${detected.platform}/${detected.target}`);
       error.code = 'ROUTE_MISMATCH';
       throw error;
     }
 
-    let merged = new Map();
+    const networkSeen = new Set();
+    const merged = new Map();
     let scannedCount = 0;
 
     const pushRecords = (records) => {
@@ -50,12 +55,50 @@ class ExtractionEngine {
       }
     };
 
+    const getFreshNetworkRecords = () => {
+      const incoming = Array.isArray(getNetworkRecords?.()) ? getNetworkRecords() : [];
+      const fresh = incoming.filter((record) => {
+        const key = record.id || record.url;
+        if (!key || networkSeen.has(key)) return false;
+        networkSeen.add(key);
+        return true;
+      });
+      return fresh.filter((record) => record.platform === platform && record.target === target);
+    };
+
     const runCollect = () => {
-      const snapshot = this.collectOnce(scope, route, getNetworkRecords());
+      const snapshot = this.collectOnce(platform, target, route, getFreshNetworkRecords());
       scannedCount += snapshot.scannedCount;
       pushRecords(snapshot.records);
       return snapshot;
     };
+
+    const emitStatus = (status) => {
+      if (typeof onProgress === 'function' && status) {
+        onProgress({
+          type: 'EXTRACTION_PROGRESS',
+          runId,
+          platform,
+          target,
+          scannedCount,
+          capturedCount: merged.size,
+          cursorState: { loop: 0, stableCount: 0 },
+          status
+        });
+      }
+    };
+
+    if (typeof adapter.waitForReady === 'function') {
+      await adapter.waitForReady(target, { input, onProgress: emitStatus });
+    }
+
+    if (typeof adapter.preparePage === 'function') {
+      await adapter.preparePage(target, { input, onProgress: emitStatus });
+    }
+
+    if (typeof adapter.waitForReady === 'function') {
+      await adapter.waitForReady(target, { input, onProgress: emitStatus });
+    }
 
     runCollect();
 
@@ -87,14 +130,12 @@ class ExtractionEngine {
           onProgress({
             type: 'EXTRACTION_PROGRESS',
             runId,
-            scope,
+            platform,
+            target,
             scannedCount,
             capturedCount: merged.size,
-            cursorState: {
-              loop,
-              stableCount
-            },
-            status: `Scanning ${scope}...`
+            cursorState: { loop, stableCount },
+            status: adapter.getProgressLabel(target)
           });
         }
 
@@ -109,7 +150,8 @@ class ExtractionEngine {
     const records = Array.from(merged.values());
     return {
       runId,
-      scope,
+      platform,
+      target,
       route,
       scannedCount,
       records,

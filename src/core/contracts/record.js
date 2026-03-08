@@ -1,4 +1,5 @@
-const VALID_SCOPE_VALUES = ['bookmark', 'like'];
+const VALID_PLATFORMS = ['x', 'instagram'];
+const VALID_TARGETS = ['bookmark', 'like', 'saved'];
 const VALID_MEDIA_TYPES = ['photo', 'video', 'gif'];
 
 function toNullableNumber(value) {
@@ -16,37 +17,80 @@ function normalizeMediaType(value) {
   return 'photo';
 }
 
-function extractTweetIdFromUrl(url) {
+function extractXStatusIdFromUrl(url) {
   if (typeof url !== 'string') return null;
   const match = url.match(/\/status\/(\d+)/);
   return match ? match[1] : null;
 }
 
+function extractInstagramMediaIdFromUrl(url) {
+  if (typeof url !== 'string') return null;
+  const match = url.match(/\/(?:p|reel|tv)\/([^/?#]+)/);
+  return match ? match[1] : null;
+}
+
+function extractRecordIdFromUrl(url, platform = '') {
+  if (platform === 'instagram') {
+    return extractInstagramMediaIdFromUrl(url);
+  }
+  return extractXStatusIdFromUrl(url);
+}
+
+function normalizeMetrics(metrics = {}) {
+  return {
+    likes: toNullableNumber(metrics.likes),
+    replies: toNullableNumber(metrics.replies),
+    views: toNullableNumber(metrics.views),
+    shares: toNullableNumber(metrics.shares),
+    saves: toNullableNumber(metrics.saves),
+    platform: metrics.platform && typeof metrics.platform === 'object'
+      ? Object.fromEntries(
+          Object.entries(metrics.platform)
+            .map(([key, value]) => [key, toNullableNumber(value)])
+            .filter(([, value]) => value !== null)
+        )
+      : {}
+  };
+}
+
 function buildRecordId(raw) {
   if (raw.id && typeof raw.id === 'string') return raw.id;
-  const idFromUrl = extractTweetIdFromUrl(raw.url);
-  if (idFromUrl) return idFromUrl;
 
-  const text = `${raw.url || ''}|${raw.text || ''}|${raw.author?.username || ''}`;
+  const platform = typeof raw.platform === 'string' ? raw.platform : 'x';
+  const urlId = extractRecordIdFromUrl(raw.url, platform);
+  if (urlId) {
+    return `${platform}:${urlId}`;
+  }
+
+  const text = [
+    platform,
+    raw.target || '',
+    raw.url || '',
+    raw.text || '',
+    raw.author?.username || ''
+  ].join('|');
   let hash = 0;
   for (let i = 0; i < text.length; i += 1) {
     hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
   }
-  return `fallback-${Math.abs(hash)}`;
+  return `${platform}:fallback-${Math.abs(hash)}`;
 }
 
-function normalizeTweetRecord(raw) {
-  const scope = raw.scope === 'likes' || raw.scope === 'like' ? 'like' : 'bookmark';
+function normalizeRecord(raw) {
   const author = raw.author || {};
   const media = Array.isArray(raw.media) ? raw.media : [];
-  const metrics = raw.metrics || {};
+  const platform = VALID_PLATFORMS.includes(raw.platform) ? raw.platform : 'x';
+  const target = VALID_TARGETS.includes(raw.target)
+    ? raw.target
+    : (raw.scope === 'like' || raw.scope === 'likes' ? 'like' : 'bookmark');
 
   return {
-    id: buildRecordId(raw),
+    id: buildRecordId({ ...raw, platform, target }),
+    platform,
+    target,
     url: typeof raw.url === 'string' ? raw.url : '',
-    scope,
     capturedAt: raw.capturedAt || new Date().toISOString(),
-    tweetPostedAt: raw.tweetPostedAt || null,
+    postedAt: raw.postedAt || raw.tweetPostedAt || null,
     author: {
       username: typeof author.username === 'string' ? author.username : '',
       displayName: typeof author.displayName === 'string' ? author.displayName : '',
@@ -61,28 +105,16 @@ function normalizeTweetRecord(raw) {
         previewUrl: typeof item.previewUrl === 'string' ? item.previewUrl : undefined,
         durationMs: toNullableNumber(item.durationMs)
       })),
-    metrics: {
-      likes: toNullableNumber(metrics.likes),
-      retweets: toNullableNumber(metrics.retweets),
-      replies: toNullableNumber(metrics.replies),
-      views: toNullableNumber(metrics.views)
-    },
+    metrics: normalizeMetrics(raw.metrics || {}),
     source: {
       route: typeof raw.source?.route === 'string' ? raw.source.route : '',
       via: raw.source?.via === 'network' ? 'network' : 'dom'
     },
-    ai: raw.ai && typeof raw.ai === 'object'
-      ? {
-          categories: Array.isArray(raw.ai.categories) ? raw.ai.categories.filter(Boolean) : [],
-          tags: Array.isArray(raw.ai.tags) ? raw.ai.tags.filter(Boolean) : [],
-          confidence: typeof raw.ai.confidence === 'number' ? raw.ai.confidence : 0,
-          rationale: typeof raw.ai.rationale === 'string' ? raw.ai.rationale : ''
-        }
-      : undefined
+    meta: raw.meta && typeof raw.meta === 'object' ? raw.meta : {}
   };
 }
 
-function validateTweetRecordV2(record) {
+function validateRecord(record) {
   if (!record || typeof record !== 'object') {
     return { valid: false, error: 'Record must be an object' };
   }
@@ -91,12 +123,16 @@ function validateTweetRecordV2(record) {
     return { valid: false, error: 'Record id is required' };
   }
 
-  if (!record.url || typeof record.url !== 'string') {
-    return { valid: false, error: 'Record url is required' };
+  if (!VALID_PLATFORMS.includes(record.platform)) {
+    return { valid: false, error: 'Record platform is invalid' };
   }
 
-  if (!VALID_SCOPE_VALUES.includes(record.scope)) {
-    return { valid: false, error: 'Record scope must be bookmark or like' };
+  if (!VALID_TARGETS.includes(record.target)) {
+    return { valid: false, error: 'Record target is invalid' };
+  }
+
+  if (!record.url || typeof record.url !== 'string') {
+    return { valid: false, error: 'Record url is required' };
   }
 
   if (!record.author || typeof record.author !== 'object') {
@@ -115,11 +151,17 @@ function validateTweetRecordV2(record) {
 }
 
 module.exports = {
-  VALID_SCOPE_VALUES,
+  VALID_PLATFORMS,
+  VALID_TARGETS,
   VALID_MEDIA_TYPES,
-  extractTweetIdFromUrl,
-  normalizeTweetRecord,
-  validateTweetRecordV2,
+  normalizeRecord,
+  validateRecord,
   normalizeMediaType,
-  toNullableNumber
+  toNullableNumber,
+  extractXStatusIdFromUrl,
+  extractInstagramMediaIdFromUrl,
+  extractRecordIdFromUrl,
+  normalizeTweetRecord: normalizeRecord,
+  validateTweetRecordV2: validateRecord,
+  extractTweetIdFromUrl: extractXStatusIdFromUrl
 };

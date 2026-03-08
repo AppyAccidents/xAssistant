@@ -2,10 +2,10 @@ const {
   STATE_KEY,
   STORAGE_VERSION,
   getDefaultState,
-  validateStorageStateV2,
+  validateStorageState,
   normalizeSettings,
-  normalizeTweetRecord,
-  validateTweetRecordV2
+  normalizeRecord,
+  validateRecord
 } = require('../core/contracts/index.js');
 const { migrateLegacyStorage } = require('./migration.js');
 
@@ -19,7 +19,7 @@ class StorageRepository {
     const existingState = result[STATE_KEY];
 
     if (existingState && existingState.storageVersion === STORAGE_VERSION) {
-      const validation = validateStorageStateV2(existingState);
+      const validation = validateStorageState(existingState);
       if (validation.valid) {
         return existingState;
       }
@@ -38,7 +38,7 @@ class StorageRepository {
       return this.ensureInitialized();
     }
 
-    const validation = validateStorageStateV2(state);
+    const validation = validateStorageState(state);
     if (!validation.valid) {
       return this.ensureInitialized();
     }
@@ -54,15 +54,12 @@ class StorageRepository {
   async updateSettings(partialSettings = {}) {
     const state = await this.loadState();
     state.settings = normalizeSettings({
-      username: typeof partialSettings.username === 'string'
-        ? partialSettings.username
-        : state.settings.username,
-      onboardingSeen: typeof partialSettings.onboardingSeen === 'boolean'
-        ? partialSettings.onboardingSeen
-        : state.settings.onboardingSeen,
-      guideVersion: Number.isInteger(partialSettings.guideVersion)
-        ? partialSettings.guideVersion
-        : state.settings.guideVersion
+      ...state.settings,
+      ...partialSettings,
+      settingsByPlatform: {
+        ...state.settings.settingsByPlatform,
+        ...(partialSettings.settingsByPlatform || {})
+      }
     });
 
     await this.saveState(state);
@@ -79,23 +76,14 @@ class StorageRepository {
     let changed = 0;
 
     for (const candidate of records || []) {
-      const normalized = normalizeTweetRecord(candidate);
-      const validation = validateTweetRecordV2(normalized);
+      const normalized = normalizeRecord(candidate);
+      const validation = validateRecord(normalized);
       if (!validation.valid) continue;
 
       const existing = state.recordsById[normalized.id];
-      if (!existing) {
-        state.recordsById[normalized.id] = normalized;
-        changed += 1;
-        continue;
-      }
-
-      const merged = {
-        ...existing,
-        ...normalized
-      };
-
-      state.recordsById[normalized.id] = merged;
+      state.recordsById[normalized.id] = existing
+        ? { ...existing, ...normalized }
+        : normalized;
       changed += 1;
     }
 
@@ -106,7 +94,8 @@ class StorageRepository {
     if (runMeta) {
       state.runs.unshift({
         runId: runMeta.runId || `run-${Date.now()}`,
-        scope: runMeta.scope || 'all',
+        platform: runMeta.platform || 'all',
+        target: runMeta.target || 'all',
         totalCount: typeof runMeta.totalCount === 'number' ? runMeta.totalCount : records.length,
         durationMs: typeof runMeta.durationMs === 'number' ? runMeta.durationMs : 0,
         createdAt: new Date().toISOString()
@@ -118,17 +107,19 @@ class StorageRepository {
     return { changed, total: state.recordOrder.length };
   }
 
-  async queryRecords({ scope = 'all', filter = {}, sort = 'capturedAt:desc', page = {} } = {}) {
+  async queryRecords({ platform = 'all', target = 'all', filter = {}, sort = 'capturedAt:desc', page = {} } = {}) {
     const state = await this.loadState();
 
     let records = state.recordOrder
       .map((id) => state.recordsById[id])
       .filter(Boolean);
 
-    if (scope === 'bookmarks') {
-      records = records.filter((record) => record.scope === 'bookmark');
-    } else if (scope === 'likes') {
-      records = records.filter((record) => record.scope === 'like');
+    if (platform !== 'all') {
+      records = records.filter((record) => record.platform === platform);
+    }
+
+    if (target !== 'all') {
+      records = records.filter((record) => record.target === target);
     }
 
     if (filter.search && typeof filter.search === 'string') {

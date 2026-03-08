@@ -1,7 +1,9 @@
-function filterByScope(records, scope = 'all') {
-  if (scope === 'bookmarks') return records.filter((record) => record.scope === 'bookmark');
-  if (scope === 'likes') return records.filter((record) => record.scope === 'like');
-  return records;
+function filterRecords(records, { platform = 'all', target = 'all' } = {}) {
+  return (records || []).filter((record) => {
+    if (platform !== 'all' && record.platform !== platform) return false;
+    if (target !== 'all' && record.target !== target) return false;
+    return true;
+  });
 }
 
 function escapeCSV(value) {
@@ -28,86 +30,116 @@ function username(record) {
   return record.author?.username || '';
 }
 
-function generateJSONExport(records, { scope = 'all' } = {}) {
-  const selected = filterByScope(records, scope);
+function projectRecord(record) {
   return {
-    metadata: {
-      scope,
-      exportedAt: new Date().toISOString(),
-      totalRecords: selected.length,
-      schemaVersion: 2
-    },
+    id: record.id,
+    platform: record.platform,
+    target: record.target,
+    postedAt: record.postedAt || '',
+    capturedAt: record.capturedAt || '',
+    authorDisplayName: displayName(record),
+    authorUsername: username(record),
+    text: record.text || '',
+    mediaUrls: mediaUrls(record),
+    likes: record.metrics?.likes ?? '',
+    replies: record.metrics?.replies ?? '',
+    views: record.metrics?.views ?? '',
+    shares: record.metrics?.shares ?? '',
+    saves: record.metrics?.saves ?? '',
+    platformMetrics: record.metrics?.platform || {},
+    url: record.url || ''
+  };
+}
+
+function buildMetadata(selected, options) {
+  return {
+    platform: options.platform || 'all',
+    target: options.target || 'all',
+    exportedAt: new Date().toISOString(),
+    totalRecords: selected.length,
+    schemaVersion: 3
+  };
+}
+
+function generateJSONExport(records, options = {}) {
+  const selected = filterRecords(records, options);
+  return {
+    metadata: buildMetadata(selected, options),
     records: selected
   };
 }
 
-function generateCSVExport(records, { scope = 'all' } = {}) {
-  const selected = filterByScope(records, scope);
-
+function generateCSVExport(records, options = {}) {
+  const selected = filterRecords(records, options).map(projectRecord);
   const header = [
     'id',
-    'scope',
-    'tweetPostedAt',
+    'platform',
+    'target',
+    'postedAt',
     'capturedAt',
     'authorDisplayName',
     'authorUsername',
     'text',
     'mediaUrls',
     'likes',
-    'retweets',
     'replies',
     'views',
+    'shares',
+    'saves',
+    'platformMetrics',
     'url'
   ];
 
   const rows = [header.join(',')];
-
   selected.forEach((record) => {
     rows.push([
       escapeCSV(record.id),
-      escapeCSV(record.scope),
-      escapeCSV(record.tweetPostedAt || ''),
-      escapeCSV(record.capturedAt || ''),
-      escapeCSV(displayName(record)),
-      escapeCSV(username(record)),
-      escapeCSV(record.text || ''),
-      escapeCSV(mediaUrls(record)),
-      escapeCSV(record.metrics?.likes ?? ''),
-      escapeCSV(record.metrics?.retweets ?? ''),
-      escapeCSV(record.metrics?.replies ?? ''),
-      escapeCSV(record.metrics?.views ?? ''),
-      escapeCSV(record.url || '')
+      escapeCSV(record.platform),
+      escapeCSV(record.target),
+      escapeCSV(record.postedAt),
+      escapeCSV(record.capturedAt),
+      escapeCSV(record.authorDisplayName),
+      escapeCSV(record.authorUsername),
+      escapeCSV(record.text),
+      escapeCSV(record.mediaUrls),
+      escapeCSV(record.likes),
+      escapeCSV(record.replies),
+      escapeCSV(record.views),
+      escapeCSV(record.shares),
+      escapeCSV(record.saves),
+      escapeCSV(JSON.stringify(record.platformMetrics)),
+      escapeCSV(record.url)
     ].join(','));
   });
 
   return rows.join('\n');
 }
 
-function generateMarkdownExport(records, { scope = 'all' } = {}) {
-  const selected = filterByScope(records, scope);
+function generateMarkdownExport(records, options = {}) {
+  const selected = filterRecords(records, options).map(projectRecord);
   const lines = [];
 
-  lines.push('# X-Assistant Report');
+  lines.push('# Social Export Report');
   lines.push('');
-  lines.push(`- Scope: ${scope}`);
+  lines.push(`- Platform: ${options.platform || 'all'}`);
+  lines.push(`- Target: ${options.target || 'all'}`);
   lines.push(`- Exported: ${new Date().toISOString()}`);
   lines.push(`- Total: ${selected.length}`);
   lines.push('');
 
   selected.forEach((record, index) => {
-    const name = displayName(record) || 'Unknown';
-    const user = username(record) || 'unknown';
-    const postedAt = record.tweetPostedAt || 'N/A';
-    const capturedAt = record.capturedAt || 'N/A';
-    const text = record.text || '(No text)';
-    const media = mediaUrls(record) || 'None';
+    const authorName = record.authorDisplayName || 'Unknown';
+    const authorUser = record.authorUsername ? ` (@${record.authorUsername})` : '';
+    const postedAt = record.postedAt || 'N/A';
+    const media = record.mediaUrls || 'None';
 
-    lines.push(`## ${index + 1}. ${name} (@${user})`);
-    lines.push(`- Scope: ${record.scope || 'unknown'}`);
-    lines.push(`- Tweet Time: ${postedAt}`);
-    lines.push(`- Captured At: ${capturedAt}`);
-    lines.push(`- URL: ${record.url || ''}`);
-    lines.push(`- Text: ${text}`);
+    lines.push(`## ${index + 1}. ${authorName}${authorUser}`);
+    lines.push(`- Platform: ${record.platform}`);
+    lines.push(`- Target: ${record.target}`);
+    lines.push(`- Posted At: ${postedAt}`);
+    lines.push(`- Captured At: ${record.capturedAt || 'N/A'}`);
+    lines.push(`- URL: ${record.url}`);
+    lines.push(`- Text: ${record.text || '(No text)'}`);
     lines.push(`- Media: ${media}`);
     lines.push('');
   });
@@ -115,31 +147,27 @@ function generateMarkdownExport(records, { scope = 'all' } = {}) {
   return lines.join('\n');
 }
 
-function generateTextExport(records, { scope = 'all' } = {}) {
-  const selected = filterByScope(records, scope);
+function generateTextExport(records, options = {}) {
+  const selected = filterRecords(records, options).map(projectRecord);
   const lines = [];
 
-  lines.push('X-Assistant Report');
-  lines.push(`Scope: ${scope}`);
+  lines.push('Social Export Report');
+  lines.push(`Platform: ${options.platform || 'all'}`);
+  lines.push(`Target: ${options.target || 'all'}`);
   lines.push(`Exported: ${new Date().toISOString()}`);
   lines.push(`Total: ${selected.length}`);
   lines.push('');
 
   selected.forEach((record, index) => {
-    const name = displayName(record) || 'Unknown';
-    const user = username(record) || 'unknown';
-    const postedAt = record.tweetPostedAt || 'N/A';
-    const capturedAt = record.capturedAt || 'N/A';
-    const text = record.text || '(No text)';
-    const media = mediaUrls(record) || 'None';
-
-    lines.push(`[${index + 1}] ${String(record.scope || 'unknown').toUpperCase()}`);
-    lines.push(`Author: ${name} (@${user})`);
-    lines.push(`Tweet Time: ${postedAt}`);
-    lines.push(`Captured At: ${capturedAt}`);
-    lines.push(`URL: ${record.url || ''}`);
-    lines.push(`Text: ${text}`);
-    lines.push(`Media: ${media}`);
+    const authorName = record.authorDisplayName || 'Unknown';
+    const authorUser = record.authorUsername ? ` (@${record.authorUsername})` : '';
+    lines.push(`[${index + 1}] ${String(record.platform).toUpperCase()} ${String(record.target).toUpperCase()}`);
+    lines.push(`Author: ${authorName}${authorUser}`);
+    lines.push(`Posted At: ${record.postedAt || 'N/A'}`);
+    lines.push(`Captured At: ${record.capturedAt || 'N/A'}`);
+    lines.push(`URL: ${record.url}`);
+    lines.push(`Text: ${record.text || '(No text)'}`);
+    lines.push(`Media: ${record.mediaUrls || 'None'}`);
     lines.push('');
   });
 
@@ -147,7 +175,8 @@ function generateTextExport(records, { scope = 'all' } = {}) {
 }
 
 module.exports = {
-  filterByScope,
+  filterRecords,
+  projectRecord,
   generateJSONExport,
   generateCSVExport,
   generateMarkdownExport,

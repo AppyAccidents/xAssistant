@@ -1,9 +1,11 @@
 const {
   MESSAGE_TYPES,
-  validateDataQuery
+  validateDataQuery,
+  validateExtractionStart
 } = require('../core/contracts/messages.js');
 const { StorageRepository } = require('../storage/repository.js');
-const { getScopeUrl } = require('../extraction/route-detector.js');
+const { getTargetUrl } = require('../extraction/route-detector.js');
+const { expandExtractionTargets, getPlatformAdapter } = require('../platforms/index.js');
 
 const repository = new StorageRepository(chrome.storage.local);
 
@@ -41,18 +43,18 @@ async function sendToTab(tabId, message, attempts = 3) {
   throw lastError;
 }
 
-async function runScopeExtraction({ scope, username, mode, runId }) {
-  const url = getScopeUrl(scope, username);
+async function runExtractionTask({ platform, target, mode, input, runId }) {
+  const url = getTargetUrl(platform, target, input);
   const tab = await createBackgroundTab(url);
 
   try {
     const response = await sendToTab(tab.id, {
       type: MESSAGE_TYPES.EXTRACTION_START,
-      payload: { scope, mode, runId }
+      payload: { platform, target, mode, input, runId }
     });
 
     if (!response || !response.success) {
-      const error = new Error(response?.error || `Extraction failed for ${scope}`);
+      const error = new Error(response?.error || `Extraction failed for ${platform}/${target}`);
       error.code = response?.code || 'EXTRACTION_FAILED';
       throw error;
     }
@@ -64,38 +66,51 @@ async function runScopeExtraction({ scope, username, mode, runId }) {
 }
 
 async function handleStartExtraction(payload) {
-  const runId = `run-${Date.now()}`;
-  const scopeRequest = payload.scope || 'all';
-  const mode = payload.mode || 'full';
-  const username = payload.username || '';
+  const validation = validateExtractionStart(payload || {});
+  if (!validation.valid) {
+    throw new Error(validation.error);
+  }
 
-  const scopes = scopeRequest === 'all' ? ['bookmarks', 'likes'] : [scopeRequest];
+  const { platform, target, mode, input } = validation.value;
+  const runId = `run-${Date.now()}`;
+  const targets = expandExtractionTargets(platform, target);
   const records = [];
   const startedAt = Date.now();
 
-  for (const scope of scopes) {
-    const scopeResult = await runScopeExtraction({
-      scope,
-      username,
+  for (const currentTarget of targets) {
+    const adapter = getPlatformAdapter(platform);
+    const inputValidation = adapter.validateInput(currentTarget, input);
+    if (!inputValidation.valid) {
+      throw new Error(inputValidation.error);
+    }
+
+    const taskResult = await runExtractionTask({
+      platform,
+      target: currentTarget,
       mode,
-      runId: `${runId}-${scope}`
+      input: inputValidation.value,
+      runId: `${runId}-${platform}-${currentTarget}`
     });
 
-    records.push(...(scopeResult.records || []));
+    const taskRecords = taskResult.records || [];
+    if (taskRecords.length > 0) {
+      await repository.upsertRecords(taskRecords, {
+        runId: `${runId}-${currentTarget}`,
+        platform,
+        target: currentTarget,
+        totalCount: taskRecords.length,
+        durationMs: taskResult.durationMs || 0
+      });
+    }
+    records.push(...taskRecords);
   }
 
   const durationMs = Date.now() - startedAt;
-  await repository.upsertRecords(records, {
-    runId,
-    scope: scopeRequest,
-    totalCount: records.length,
-    durationMs
-  });
-
   const completion = {
     type: MESSAGE_TYPES.EXTRACTION_COMPLETE,
     runId,
-    scope: scopeRequest,
+    platform,
+    target,
     totalCount: records.length,
     durationMs,
     __relay: true

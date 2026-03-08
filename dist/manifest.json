@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "X-Assistant",
+  "name": "Social Assistant",
   "version": "2.0.0",
-  "description": "Extract X (Twitter) bookmarks and likes, then export reports as MD, CSV, TXT, or JSON.",
+  "description": "Extract X/Twitter bookmarks and likes plus Instagram saved posts, then export reports as MD, CSV, TXT, or JSON.",
   "action": {
     "default_popup": "dist/popup.html",
     "default_icon": {
@@ -27,7 +27,9 @@
         "https://x.com/*",
         "https://*.x.com/*",
         "https://twitter.com/*",
-        "https://*.twitter.com/*"
+        "https://*.twitter.com/*",
+        "https://www.instagram.com/*",
+        "https://instagram.com/*"
       ],
       "js": [
         "dist/content-script.js"
@@ -46,7 +48,9 @@
     "https://x.com/*",
     "https://*.x.com/*",
     "https://twitter.com/*",
-    "https://*.twitter.com/*"
+    "https://*.twitter.com/*",
+    "https://www.instagram.com/*",
+    "https://instagram.com/*"
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"
@@ -60,7 +64,9 @@
         "https://x.com/*",
         "https://*.x.com/*",
         "https://twitter.com/*",
-        "https://*.twitter.com/*"
+        "https://*.twitter.com/*",
+        "https://www.instagram.com/*",
+        "https://instagram.com/*"
       ]
     }
   ]

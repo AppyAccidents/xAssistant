@@ -1,4 +1,4 @@
-const { endpointScopeHint } = require('./route-detector.js');
+const { endpointTargetHint } = require('./route-detector.js');
 
 function collectTweetResultNodes(node, output, visited = new WeakSet()) {
   if (!node || typeof node !== 'object') return;
@@ -51,7 +51,7 @@ function parseNetworkMedia(legacy = {}) {
     .filter((item) => item.url);
 }
 
-function parseTweetResult(resultNode, scopeHint, route) {
+function parseTweetResult(resultNode, targetHint, route) {
   const legacy = resultNode.legacy;
   const core = resultNode.core?.user_results?.result?.legacy;
   if (!legacy || !core) {
@@ -64,11 +64,12 @@ function parseTweetResult(resultNode, scopeHint, route) {
   const text = noteText || legacy.full_text || '';
 
   return {
-    id,
+    id: id ? `x:${id}` : '',
+    platform: 'x',
+    target: targetHint === 'like' ? 'like' : 'bookmark',
     url: id && username ? `https://x.com/${username}/status/${id}` : '',
-    scope: scopeHint === 'likes' ? 'like' : 'bookmark',
     capturedAt: new Date().toISOString(),
-    tweetPostedAt: legacy.created_at ? new Date(legacy.created_at).toISOString() : null,
+    postedAt: legacy.created_at ? new Date(legacy.created_at).toISOString() : null,
     author: {
       username,
       displayName: core.name || '',
@@ -78,9 +79,11 @@ function parseTweetResult(resultNode, scopeHint, route) {
     media: parseNetworkMedia(legacy),
     metrics: {
       likes: legacy.favorite_count,
-      retweets: legacy.retweet_count,
       replies: legacy.reply_count,
-      views: resultNode.views?.count || null
+      views: resultNode.views?.count || null,
+      platform: {
+        retweets: legacy.retweet_count
+      }
     },
     source: {
       route,
@@ -93,11 +96,11 @@ function parseNetworkPayload(payload, endpointUrl = '') {
   const nodes = [];
   collectTweetResultNodes(payload, nodes);
 
-  const scopeHint = endpointScopeHint(endpointUrl);
-  const route = scopeHint === 'likes' ? '/likes' : '/i/bookmarks';
+  const targetHint = endpointTargetHint(endpointUrl, 'x');
+  const route = targetHint === 'like' ? '/likes' : '/i/bookmarks';
 
   return nodes
-    .map((node) => parseTweetResult(node, scopeHint, route))
+    .map((node) => parseTweetResult(node, targetHint, route))
     .filter((item) => item && item.url);
 }
 

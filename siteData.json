@@ -1,13 +1,13 @@
 {
-  "id": "xbookmarks",
-  "title": "X Bookmarks Analyzer",
+  "id": "social-assistant",
+  "title": "Social Assistant",
   "group_id": "group-web",
   "platform_tag": ["Extension"],
   "status": "coming_soon",
-  "description": "Turns bookmark chaos into a command center: extract, sort, analyze, export, and finally remember why you bookmarked that 3 a.m. thread about ergonomic spoons.",
+  "description": "Turns saved-post chaos into a local command center: extract X/Twitter bookmarks and likes plus Instagram saved posts, then export everything in one place.",
   "vibe_tone": "cyan",
   "vibe_text": "Local-first brain organizer with optional AI turbo.",
-  "art": "XBOOKMARKS",
-  "superpower": "Bookmark extraction and analytics command deck",
+  "art": "SOCIAL",
+  "superpower": "Multi-platform extraction and export command deck",
   "order_index": 80
 }

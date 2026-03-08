@@ -6,6 +6,7 @@ const {
   generateTextExport
 } = require('../export/index.js');
 const { downloadTextFile } = require('../ui/dom-safe.js');
+const { getPlatformAdapter } = require('../platforms/index.js');
 
 function sendRuntimeMessage(message) {
   return new Promise((resolve, reject) => {
@@ -23,19 +24,19 @@ function normalizeUsername(rawValue) {
   return String(rawValue || '').trim().replace(/^@+/, '');
 }
 
-const GUIDE_VERSION = 1;
+const GUIDE_VERSION = 2;
 const GUIDE_STEPS = [
   {
-    title: 'Choose extraction scope',
-    body: 'Pick what to collect: Bookmarks, Likes, or Both.'
+    title: 'Choose a platform',
+    body: 'Pick X or Instagram before starting extraction.'
   },
   {
-    title: 'Set username for likes',
-    body: 'Likes and Both need a username. Enter it once and we will reuse it.'
+    title: 'Choose a target',
+    body: 'Select a specific target or run all supported targets for that platform.'
   },
   {
     title: 'Extract, then export',
-    body: 'Run extraction first, then click Export Report to download your data.'
+    body: 'Run extraction first, then export the combined report in the format you need.'
   }
 ];
 
@@ -43,9 +44,14 @@ class PopupApp {
   constructor() {
     this.state = {
       settings: {
-        username: '',
         onboardingSeen: false,
-        guideVersion: GUIDE_VERSION
+        guideVersion: GUIDE_VERSION,
+        selectedPlatform: 'x',
+        selectedTarget: 'all',
+        settingsByPlatform: {
+          x: { username: '' },
+          instagram: { username: '' }
+        }
       },
       progress: 0,
       running: false,
@@ -60,10 +66,13 @@ class PopupApp {
       statusText: document.getElementById('statusText'),
       progressBar: document.getElementById('progressBar'),
       progressLabel: document.getElementById('progressLabel'),
-      extractBookmarksBtn: document.getElementById('extractBookmarksBtn'),
-      extractLikesBtn: document.getElementById('extractLikesBtn'),
-      extractBothBtn: document.getElementById('extractBothBtn'),
+      platformSelect: document.getElementById('platformSelect'),
+      targetSelect: document.getElementById('targetSelect'),
+      usernameField: document.getElementById('usernameField'),
+      usernameLabel: document.getElementById('usernameLabel'),
       usernameInput: document.getElementById('usernameInput'),
+      extractSelectedBtn: document.getElementById('extractSelectedBtn'),
+      extractAllBtn: document.getElementById('extractAllBtn'),
       exportFormat: document.getElementById('exportFormat'),
       exportBtn: document.getElementById('exportBtn'),
       guideOverlay: document.getElementById('guideOverlay'),
@@ -83,6 +92,7 @@ class PopupApp {
   async initialize() {
     this.setStatus('Loading...', 'idle');
     await this.loadSettings();
+    this.renderPlatformControls();
     await this.refreshRecordCount();
     this.setProgress(0);
     this.setStatus(`Ready (${this.state.recordCount} records)`, 'idle');
@@ -92,15 +102,16 @@ class PopupApp {
   }
 
   bindEvents() {
-    this.elements.extractBookmarksBtn.addEventListener('click', () => this.startExtraction('bookmarks'));
-    this.elements.extractLikesBtn.addEventListener('click', () => this.startExtraction('likes'));
-    this.elements.extractBothBtn.addEventListener('click', () => this.startExtraction('all'));
+    this.elements.platformSelect.addEventListener('change', () => this.handlePlatformChange());
+    this.elements.targetSelect.addEventListener('change', () => this.handleTargetChange());
+    this.elements.extractSelectedBtn.addEventListener('click', () => this.startExtraction(this.elements.targetSelect.value));
+    this.elements.extractAllBtn.addEventListener('click', () => this.startExtraction('all'));
     this.elements.exportBtn.addEventListener('click', () => this.exportData());
 
-    this.elements.usernameInput.addEventListener('blur', () => this.saveUsername());
+    this.elements.usernameInput.addEventListener('blur', () => this.savePlatformSettings());
     this.elements.usernameInput.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') {
-        this.saveUsername();
+        this.savePlatformSettings();
       }
     });
 
@@ -109,18 +120,65 @@ class PopupApp {
       this.handleRuntimeEvent(message);
     });
 
-    if (this.elements.guideNextBtn) {
-      this.elements.guideNextBtn.addEventListener('click', () => this.nextGuideStep());
+    this.elements.guideNextBtn?.addEventListener('click', () => this.nextGuideStep());
+    this.elements.guideBackBtn?.addEventListener('click', () => this.previousGuideStep());
+    this.elements.guideSkipBtn?.addEventListener('click', () => this.dismissGuide());
+    this.elements.guideDoneBtn?.addEventListener('click', () => this.dismissGuide());
+  }
+
+  getSelectedPlatform() {
+    return this.elements.platformSelect.value === 'instagram' ? 'instagram' : 'x';
+  }
+
+  getSelectedTarget() {
+    return this.elements.targetSelect.value || 'all';
+  }
+
+  getSelectedAdapter() {
+    return getPlatformAdapter(this.getSelectedPlatform());
+  }
+
+  renderPlatformControls() {
+    const platform = this.state.settings.selectedPlatform;
+    const target = this.state.settings.selectedTarget;
+    const adapter = getPlatformAdapter(platform);
+    const targets = adapter.getAllTargets();
+
+    this.elements.platformSelect.value = platform;
+    this.elements.targetSelect.innerHTML = '';
+
+    const allOption = document.createElement('option');
+    allOption.value = 'all';
+    allOption.textContent = 'All Supported Targets';
+    this.elements.targetSelect.appendChild(allOption);
+
+    targets.forEach((item) => {
+      const option = document.createElement('option');
+      option.value = item;
+      option.textContent = adapter.getTargetLabel(item);
+      this.elements.targetSelect.appendChild(option);
+    });
+
+    this.elements.targetSelect.value = targets.includes(target) ? target : 'all';
+    this.elements.extractAllBtn.textContent = `Extract All For ${adapter.label}`;
+
+    const username = this.state.settings.settingsByPlatform[platform]?.username || '';
+    this.elements.usernameInput.value = username ? `@${username}` : '';
+    this.updateConditionalFields();
+  }
+
+  updateConditionalFields() {
+    const adapter = this.getSelectedAdapter();
+    const target = this.getSelectedTarget();
+    const schemaTarget = target === 'all' ? adapter.getAllTargets()[0] : target;
+    const schema = adapter.getInputSchema(schemaTarget);
+    const usernameField = schema.find((item) => item.key === 'username');
+    const requiresUsername = Boolean(usernameField);
+    this.elements.usernameField.hidden = !requiresUsername;
+    if (usernameField) {
+      this.elements.usernameLabel.textContent = usernameField.label;
     }
-    if (this.elements.guideBackBtn) {
-      this.elements.guideBackBtn.addEventListener('click', () => this.previousGuideStep());
-    }
-    if (this.elements.guideSkipBtn) {
-      this.elements.guideSkipBtn.addEventListener('click', () => this.dismissGuide());
-    }
-    if (this.elements.guideDoneBtn) {
-      this.elements.guideDoneBtn.addEventListener('click', () => this.dismissGuide());
-    }
+    this.elements.usernameInput.disabled = !requiresUsername || this.state.running;
   }
 
   setStatus(text, tone = 'idle') {
@@ -132,21 +190,7 @@ class PopupApp {
     if (!this.elements.appRoot) return;
 
     this.elements.appRoot.classList.remove('state-idle', 'state-running', 'state-success', 'state-error');
-
-    switch (tone) {
-      case 'running':
-        this.elements.appRoot.classList.add('state-running');
-        break;
-      case 'success':
-        this.elements.appRoot.classList.add('state-success');
-        break;
-      case 'error':
-        this.elements.appRoot.classList.add('state-error');
-        break;
-      default:
-        this.elements.appRoot.classList.add('state-idle');
-        break;
-    }
+    this.elements.appRoot.classList.add(`state-${tone === 'running' || tone === 'success' || tone === 'error' ? tone : 'idle'}`);
   }
 
   setProgress(value) {
@@ -163,11 +207,12 @@ class PopupApp {
       this.clearExportCta();
     }
 
-    this.elements.extractBookmarksBtn.disabled = isRunning;
-    this.elements.extractLikesBtn.disabled = isRunning;
-    this.elements.extractBothBtn.disabled = isRunning;
-    this.elements.usernameInput.disabled = isRunning;
+    this.elements.platformSelect.disabled = isRunning;
+    this.elements.targetSelect.disabled = isRunning;
+    this.elements.extractSelectedBtn.disabled = isRunning;
+    this.elements.extractAllBtn.disabled = isRunning;
     this.elements.exportBtn.disabled = isRunning;
+    this.updateConditionalFields();
   }
 
   async loadSettings() {
@@ -175,33 +220,70 @@ class PopupApp {
       .catch(() => ({ success: false }));
 
     if (response.success && response.settings) {
-      this.state.settings.username = normalizeUsername(response.settings.username || '');
-      if (typeof response.settings.onboardingSeen === 'boolean') {
-        this.state.settings.onboardingSeen = response.settings.onboardingSeen;
-      }
-      if (Number.isInteger(response.settings.guideVersion)) {
-        this.state.settings.guideVersion = response.settings.guideVersion;
-      }
+      const settings = response.settings;
+      this.state.settings = {
+        ...this.state.settings,
+        ...settings,
+        settingsByPlatform: {
+          x: {
+            username: normalizeUsername(settings.settingsByPlatform?.x?.username || settings.username || '')
+          },
+          instagram: {
+            username: normalizeUsername(settings.settingsByPlatform?.instagram?.username || '')
+          }
+        }
+      };
     }
-
-    this.elements.usernameInput.value = this.state.settings.username ? `@${this.state.settings.username}` : '';
   }
 
-  async saveUsername(value = this.elements.usernameInput.value) {
-    const username = normalizeUsername(value);
+  async savePlatformSettings() {
+    const platform = this.getSelectedPlatform();
+    const payload = {
+      selectedPlatform: platform,
+      selectedTarget: this.getSelectedTarget(),
+      settingsByPlatform: {
+        ...this.state.settings.settingsByPlatform,
+        x: {
+          username: platform === 'x'
+            ? normalizeUsername(this.elements.usernameInput.value)
+            : normalizeUsername(this.state.settings.settingsByPlatform.x.username || '')
+        },
+        instagram: {
+          username: platform === 'instagram'
+            ? normalizeUsername(this.elements.usernameInput.value)
+            : normalizeUsername(this.state.settings.settingsByPlatform.instagram.username || '')
+        }
+      }
+    };
 
     const response = await sendRuntimeMessage({
       type: MESSAGE_TYPES.XA_SAVE_SETTINGS,
-      payload: { username }
+      payload
     }).catch((error) => ({ success: false, error: error.message }));
 
     if (!response.success) {
       return false;
     }
 
-    this.state.settings.username = username;
-    this.elements.usernameInput.value = username ? `@${username}` : '';
+    this.state.settings = {
+      ...this.state.settings,
+      ...response.settings
+    };
+    this.renderPlatformControls();
     return true;
+  }
+
+  handlePlatformChange() {
+    this.state.settings.selectedPlatform = this.getSelectedPlatform();
+    this.state.settings.selectedTarget = 'all';
+    this.renderPlatformControls();
+    this.savePlatformSettings();
+  }
+
+  handleTargetChange() {
+    this.state.settings.selectedTarget = this.getSelectedTarget();
+    this.updateConditionalFields();
+    this.savePlatformSettings();
   }
 
   shouldShowOnboardingGuide() {
@@ -216,14 +298,12 @@ class PopupApp {
   }
 
   renderGuideStep() {
-    if (!this.elements.guideOverlay) return;
     const step = GUIDE_STEPS[this.state.guideStep];
     if (!step) return;
 
     this.elements.guideTitle.textContent = step.title;
     this.elements.guideBody.textContent = step.body;
     this.elements.guideStepLabel.textContent = `Step ${this.state.guideStep + 1} of ${GUIDE_STEPS.length}`;
-
     this.elements.guideBackBtn.hidden = this.state.guideStep === 0;
     this.elements.guideNextBtn.hidden = this.state.guideStep >= GUIDE_STEPS.length - 1;
     this.elements.guideDoneBtn.hidden = this.state.guideStep < GUIDE_STEPS.length - 1;
@@ -242,15 +322,15 @@ class PopupApp {
   }
 
   async dismissGuide() {
-    if (this.elements.guideOverlay) {
-      this.elements.guideOverlay.hidden = true;
-    }
-
+    this.elements.guideOverlay.hidden = true;
     const response = await sendRuntimeMessage({
       type: MESSAGE_TYPES.XA_SAVE_SETTINGS,
       payload: {
         onboardingSeen: true,
-        guideVersion: GUIDE_VERSION
+        guideVersion: GUIDE_VERSION,
+        selectedPlatform: this.getSelectedPlatform(),
+        selectedTarget: this.getSelectedTarget(),
+        settingsByPlatform: this.state.settings.settingsByPlatform
       }
     }).catch((error) => ({ success: false, error: error.message }));
 
@@ -259,30 +339,24 @@ class PopupApp {
       return;
     }
 
-    this.state.settings.onboardingSeen = true;
-    this.state.settings.guideVersion = GUIDE_VERSION;
+    this.state.settings = {
+      ...this.state.settings,
+      ...response.settings
+    };
   }
 
   async refreshRecordCount() {
     const response = await sendRuntimeMessage({
       type: MESSAGE_TYPES.DATA_QUERY,
       payload: {
-        scope: 'all',
+        platform: 'all',
+        target: 'all',
         page: { offset: 0, limit: 1 }
       }
     }).catch(() => ({ success: false }));
 
-    if (!response.success) {
-      return;
-    }
-
-    this.state.recordCount = typeof response.total === 'number'
-      ? response.total
-      : (response.records || []).length;
-  }
-
-  requiresUsername(scope) {
-    return scope === 'likes' || scope === 'all';
+    if (!response.success) return;
+    this.state.recordCount = typeof response.total === 'number' ? response.total : (response.records || []).length;
   }
 
   clearExportCta() {
@@ -296,9 +370,7 @@ class PopupApp {
   pulseExportCta() {
     this.clearExportCta();
     this.elements.exportBtn.classList.add('action-attention');
-    this.exportCtaTimer = setTimeout(() => {
-      this.clearExportCta();
-    }, 3000);
+    this.exportCtaTimer = setTimeout(() => this.clearExportCta(), 3000);
   }
 
   handleExtractionCompletion(totalCount) {
@@ -315,33 +387,61 @@ class PopupApp {
     this.setStatus('No records found. Try scrolling and extract again.', 'error');
   }
 
-  async startExtraction(scope) {
-    if (this.state.running) return;
-
-    const username = normalizeUsername(this.elements.usernameInput.value);
-
-    if (this.requiresUsername(scope) && !username) {
-      this.setStatus('Enter @username for likes extraction', 'error');
+  handleExtractionFailure(message, code = '') {
+    if (code === 'INSTAGRAM_COLLECTION_INDEX_UNRESOLVED') {
+      this.setStatus('Instagram saved collections loaded, but All posts could not be opened automatically.', 'error');
       return;
     }
 
-    await this.saveUsername(username);
+    if (code === 'INSTAGRAM_GRID_EMPTY') {
+      this.setStatus('Instagram All posts loaded, but no extractable saved items were found.', 'error');
+      return;
+    }
+
+    if (code === 'INSTAGRAM_PAGE_UNSUPPORTED') {
+      this.setStatus('Instagram saved page structure is not supported by the current extractor.', 'error');
+      return;
+    }
+
+    this.setStatus(message || 'Extraction failed', 'error');
+  }
+
+  async startExtraction(targetOverride) {
+    if (this.state.running) return;
+
+    await this.savePlatformSettings();
+
+    const platform = this.getSelectedPlatform();
+    const target = targetOverride || this.getSelectedTarget();
+    const rawInput = {
+      username: normalizeUsername(this.elements.usernameInput.value)
+    };
+    const adapter = getPlatformAdapter(platform);
+    const validationTarget = target === 'all' ? adapter.getAllTargets()[0] : target;
+    const inputValidation = adapter.validateInput(validationTarget, rawInput);
+    if (!inputValidation.valid) {
+      this.setStatus(inputValidation.error, 'error');
+      this.setProgress(0);
+      return;
+    }
+    const input = rawInput;
 
     this.setRunning(true);
     this.setProgress(2);
-    this.setStatus(`Starting ${scope} extraction...`, 'running');
+    this.setStatus(`Starting ${platform}/${target} extraction...`, 'running');
 
     const response = await sendRuntimeMessage({
       type: MESSAGE_TYPES.XA_START_EXTRACTION,
       payload: {
-        scope,
+        platform,
+        target,
         mode: 'full',
-        username
+        input
       }
     }).catch((error) => ({ success: false, error: error.message }));
 
     if (!response.success) {
-      this.setStatus(response.error || 'Extraction failed', 'error');
+      this.handleExtractionFailure(response.error, response.code);
       this.setRunning(false);
       this.setProgress(0);
       return;
@@ -353,7 +453,7 @@ class PopupApp {
   exportDataForFormat(records, format) {
     if (format === 'json') {
       return {
-        content: JSON.stringify(generateJSONExport(records, { scope: 'all' }), null, 2),
+        content: JSON.stringify(generateJSONExport(records, { platform: 'all', target: 'all' }), null, 2),
         extension: 'json',
         mime: 'application/json'
       };
@@ -361,7 +461,7 @@ class PopupApp {
 
     if (format === 'csv') {
       return {
-        content: generateCSVExport(records, { scope: 'all' }),
+        content: generateCSVExport(records, { platform: 'all', target: 'all' }),
         extension: 'csv',
         mime: 'text/csv'
       };
@@ -369,7 +469,7 @@ class PopupApp {
 
     if (format === 'md') {
       return {
-        content: generateMarkdownExport(records, { scope: 'all' }),
+        content: generateMarkdownExport(records, { platform: 'all', target: 'all' }),
         extension: 'md',
         mime: 'text/markdown'
       };
@@ -377,7 +477,7 @@ class PopupApp {
 
     if (format === 'txt') {
       return {
-        content: generateTextExport(records, { scope: 'all' }),
+        content: generateTextExport(records, { platform: 'all', target: 'all' }),
         extension: 'txt',
         mime: 'text/plain'
       };
@@ -392,7 +492,8 @@ class PopupApp {
     const response = await sendRuntimeMessage({
       type: MESSAGE_TYPES.DATA_QUERY,
       payload: {
-        scope: 'all',
+        platform: 'all',
+        target: 'all',
         page: { offset: 0, limit: 5000 }
       }
     }).catch((error) => ({ success: false, error: error.message }));
@@ -413,7 +514,7 @@ class PopupApp {
 
     try {
       const output = this.exportDataForFormat(records, format);
-      const filename = `x-assistant-report-${timestamp}.${output.extension}`;
+      const filename = `social-assistant-report-${timestamp}.${output.extension}`;
       downloadTextFile(output.content, filename, output.mime);
       this.setStatus(`Exported ${records.length} records as ${format.toUpperCase()}`, 'success');
     } catch (error) {
@@ -427,14 +528,13 @@ class PopupApp {
       const scanned = Number(message.scannedCount || 0);
       const denominator = Math.max(scanned, captured, 1);
       const pct = Math.min(95, Math.round((captured / denominator) * 100));
-
       this.setProgress(pct);
       this.setStatus(message.status || 'Extraction in progress...', 'running');
       return;
     }
 
     if (message.type === MESSAGE_TYPES.EXTRACTION_ERROR) {
-      this.setStatus(message.message || 'Extraction failed', 'error');
+      this.handleExtractionFailure(message.message, message.code);
       this.setProgress(0);
       this.setRunning(false);
       return;

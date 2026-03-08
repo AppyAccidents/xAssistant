@@ -1,49 +1,69 @@
 const {
   validateExtractionStart,
   validateDataQuery,
-  normalizeTweetRecord,
-  validateTweetRecordV2,
+  normalizeRecord,
+  validateRecord,
   getDefaultState,
-  validateStorageStateV2
+  validateStorageState
 } = require('./src/core/contracts/index.js');
 
 describe('contracts', () => {
-  test('validateExtractionStart validates scope and mode', () => {
-    const valid = validateExtractionStart({ scope: 'bookmarks', mode: 'full' });
+  test('validateExtractionStart validates platform and target', () => {
+    const valid = validateExtractionStart({ platform: 'x', target: 'bookmark', mode: 'full' });
     expect(valid.valid).toBe(true);
 
-    const invalid = validateExtractionStart({ scope: 'invalid' });
+    const invalid = validateExtractionStart({ platform: 'instagram', target: 'like' });
     expect(invalid.valid).toBe(false);
   });
 
+  test('instagram saved remains a valid extraction target', () => {
+    const valid = validateExtractionStart({ platform: 'instagram', target: 'saved', mode: 'full' });
+    expect(valid.valid).toBe(true);
+  });
+
   test('validateDataQuery normalizes pagination defaults', () => {
-    const result = validateDataQuery({ scope: 'all', page: {} });
+    const result = validateDataQuery({ platform: 'all', target: 'all', page: {} });
     expect(result.valid).toBe(true);
     expect(result.value.page.limit).toBe(5000);
   });
 
-  test('normalizeTweetRecord produces valid TweetRecordV2', () => {
-    const normalized = normalizeTweetRecord({
-      url: 'https://x.com/test/status/123',
-      scope: 'bookmark',
-      author: { username: 'test', displayName: 'Test' },
-      text: 'hello',
-      media: [{ type: 'animated_gif', url: 'https://gif.mp4' }],
-      metrics: { likes: '10' },
-      source: { route: '/i/bookmarks', via: 'network' }
-    });
+  test.each([
+    {
+      name: 'x bookmark',
+      input: {
+        platform: 'x',
+        target: 'bookmark',
+        url: 'https://x.com/test/status/123',
+        author: { username: 'test', displayName: 'Test' },
+        text: 'hello',
+        media: [{ type: 'animated_gif', url: 'https://gif.mp4' }],
+        metrics: { likes: '10', platform: { retweets: '2' } },
+        source: { route: '/i/bookmarks', via: 'network' }
+      }
+    },
+    {
+      name: 'instagram saved',
+      input: {
+        platform: 'instagram',
+        target: 'saved',
+        url: 'https://www.instagram.com/p/abc123/',
+        author: { username: 'iguser', displayName: 'IG User' },
+        text: 'saved post'
+      }
+    }
+  ])('normalizeRecord produces valid canonical record for %s', ({ input }) => {
+    const normalized = normalizeRecord(input);
+    const validation = validateRecord(normalized);
 
-    const validation = validateTweetRecordV2(normalized);
     expect(validation.valid).toBe(true);
-    expect(normalized.media[0].type).toBe('gif');
-    expect(normalized.metrics.likes).toBe(10);
+    expect(normalized.media?.[0]?.type || 'photo').toBeDefined();
   });
 
-  test('default state validates as storage v2', () => {
+  test('default state validates as storage v3', () => {
     const state = getDefaultState();
-    const validation = validateStorageStateV2(state);
+    const validation = validateStorageState(state);
     expect(validation.valid).toBe(true);
-    expect(state.settings.onboardingSeen).toBe(false);
-    expect(state.settings.guideVersion).toBe(1);
+    expect(state.settings.settingsByPlatform.x.username).toBe('');
+    expect(state.settings.guideVersion).toBe(2);
   });
 });

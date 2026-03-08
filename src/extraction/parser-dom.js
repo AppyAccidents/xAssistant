@@ -33,13 +33,13 @@ function extractDomMedia(article) {
   return media;
 }
 
-function parseArticle(article, scope, route) {
+function parseXArticle(article, target, route) {
   const link = article.querySelector('a[href*="/status/"]');
   const url = link?.href || '';
   if (!url) return null;
 
   const idMatch = url.match(/\/status\/(\d+)/);
-  const id = idMatch ? idMatch[1] : '';
+  const id = idMatch ? `x:${idMatch[1]}` : '';
 
   let username = '';
   let displayName = '';
@@ -54,7 +54,7 @@ function parseArticle(article, scope, route) {
   }
 
   if (!username) {
-    const match = url.match(/x\.com\/([^/]+)\/status/);
+    const match = url.match(/(?:x\.com|twitter\.com)\/([^/]+)\/status/);
     username = match ? match[1] : '';
   }
 
@@ -64,7 +64,7 @@ function parseArticle(article, scope, route) {
     .join(' ');
 
   const timeNode = article.querySelector('time');
-  const tweetPostedAt = timeNode?.getAttribute('datetime') || null;
+  const postedAt = timeNode?.getAttribute('datetime') || null;
 
   const likes = parseCount(article.querySelector('[data-testid="like"]')?.textContent || '');
   const retweets = parseCount(article.querySelector('[data-testid="retweet"]')?.textContent || '');
@@ -81,10 +81,11 @@ function parseArticle(article, scope, route) {
 
   return {
     id,
+    platform: 'x',
+    target,
     url,
-    scope: scope === 'likes' ? 'like' : 'bookmark',
     capturedAt: new Date().toISOString(),
-    tweetPostedAt,
+    postedAt,
     author: {
       username,
       displayName
@@ -93,9 +94,11 @@ function parseArticle(article, scope, route) {
     media: extractDomMedia(article),
     metrics: {
       likes,
-      retweets,
       replies,
-      views
+      views,
+      platform: {
+        retweets
+      }
     },
     source: {
       route,
@@ -104,12 +107,19 @@ function parseArticle(article, scope, route) {
   };
 }
 
-function parseVisibleArticles(scope, route) {
+function parseVisibleArticles(platform, target, route) {
+  if (platform !== 'x') {
+    return {
+      scannedCount: 0,
+      records: []
+    };
+  }
+
   const articles = Array.from(document.querySelectorAll('article'));
   const parsed = [];
 
   for (const article of articles) {
-    const item = parseArticle(article, scope, route);
+    const item = parseXArticle(article, target, route);
     if (item) parsed.push(item);
   }
 
@@ -121,7 +131,7 @@ function parseVisibleArticles(scope, route) {
 
 module.exports = {
   parseVisibleArticles,
-  parseArticle,
+  parseXArticle,
   parseCount,
   extractDomMedia
 };

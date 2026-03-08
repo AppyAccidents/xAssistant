@@ -1,8 +1,8 @@
 const { StorageRepository } = require('./src/storage/repository.js');
 const { generateCSVExport, generateTextExport } = require('./src/export/index.js');
 
-describe('e2e smoke pipeline', () => {
-  test('ingest -> export', async () => {
+describe('mixed-platform smoke pipeline', () => {
+  test('ingest -> query -> export mixed records', async () => {
     const memory = {
       store: {},
       async get(keys) {
@@ -26,28 +26,41 @@ describe('e2e smoke pipeline', () => {
 
     await repo.upsertRecords([
       {
-        id: '1',
+        id: 'x:1',
+        platform: 'x',
+        target: 'bookmark',
         url: 'https://x.com/a/status/1',
-        scope: 'bookmark',
         capturedAt: '2024-01-01T00:00:00.000Z',
-        tweetPostedAt: '2024-01-01T00:00:00.000Z',
+        postedAt: '2024-01-01T00:00:00.000Z',
         author: { username: 'a', displayName: 'A' },
         text: 'software launch update',
         media: [{ type: 'photo', url: 'https://img.test/a.jpg' }],
-        metrics: { likes: 1, retweets: 2, replies: 3, views: 4 },
+        metrics: { likes: 1, replies: 3, views: 4, platform: { retweets: 2 } },
         source: { route: '/i/bookmarks', via: 'dom' }
+      },
+      {
+        id: 'instagram:abc',
+        platform: 'instagram',
+        target: 'saved',
+        url: 'https://www.instagram.com/p/abc/',
+        capturedAt: '2024-01-02T00:00:00.000Z',
+        author: { username: 'b', displayName: 'B' },
+        text: 'saved travel post',
+        media: [{ type: 'photo', url: 'https://img.test/b.jpg' }],
+        metrics: {},
+        source: { route: '/saved/all-posts', via: 'dom' }
       }
     ]);
 
-    const query = await repo.queryRecords({ scope: 'all' });
-    expect(query.total).toBe(1);
+    const query = await repo.queryRecords({ platform: 'all', target: 'all' });
+    expect(query.total).toBe(2);
 
-    const csv = generateCSVExport(query.records, { scope: 'all' });
+    const csv = generateCSVExport(query.records, { platform: 'all', target: 'all' });
     expect(csv).toContain('authorUsername');
-    expect(csv).toContain('software launch update');
+    expect(csv).toContain('saved travel post');
 
-    const text = generateTextExport(query.records, { scope: 'all' });
-    expect(text).toContain('X-Assistant Report');
-    expect(text).toContain('URL: https://x.com/a/status/1');
+    const text = generateTextExport(query.records, { platform: 'all', target: 'all' });
+    expect(text).toContain('Social Export Report');
+    expect(text).toContain('URL: https://www.instagram.com/p/abc/');
   });
 });

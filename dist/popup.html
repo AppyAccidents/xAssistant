@@ -3,15 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>X-Assistant</title>
+  <title>Social Assistant</title>
   <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
   <main class="app" id="popupRoot">
     <header class="panel header">
       <div>
-        <h1>X-Assistant</h1>
-        <p class="subtitle">Bookmark/Likes Extractor</p>
+        <h1>Social Assistant</h1>
+        <p class="subtitle">Extract saved posts, bookmarks, and likes</p>
       </div>
       <p id="statusText">Ready</p>
     </header>
@@ -19,15 +19,27 @@
     <section class="panel">
       <h2>Extraction</h2>
 
-      <label class="field" for="usernameInput">
-        <span>Username for likes (@handle)</span>
+      <label class="field" for="platformSelect">
+        <span>Platform</span>
+        <select id="platformSelect">
+          <option value="x">X / Twitter</option>
+          <option value="instagram">Instagram</option>
+        </select>
+      </label>
+
+      <label class="field" for="targetSelect">
+        <span>Target</span>
+        <select id="targetSelect"></select>
+      </label>
+
+      <label class="field" for="usernameInput" id="usernameField">
+        <span id="usernameLabel">Username (@handle)</span>
         <input id="usernameInput" type="text" placeholder="@username" autocomplete="off" />
       </label>
 
       <div class="button-grid">
-        <button id="extractBookmarksBtn" class="action action-primary" type="button">Extract Bookmarks</button>
-        <button id="extractLikesBtn" class="action action-secondary" type="button">Extract Likes</button>
-        <button id="extractBothBtn" class="action" type="button">Extract Both</button>
+        <button id="extractSelectedBtn" class="action action-primary" type="button">Extract Selected</button>
+        <button id="extractAllBtn" class="action action-secondary" type="button">Extract All For Platform</button>
       </div>
 
       <div class="progress-row">

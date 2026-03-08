@@ -1,14 +1,39 @@
-const STORAGE_VERSION = 2;
+const STORAGE_VERSION = 3;
 const STATE_KEY = 'xAssistantState';
-const ONBOARDING_GUIDE_VERSION = 1;
+const ONBOARDING_GUIDE_VERSION = 2;
+
+function normalizePlatformSettings(platform, settings = {}) {
+  if (platform === 'x') {
+    return {
+      username: typeof settings.username === 'string' ? settings.username : ''
+    };
+  }
+
+  if (platform === 'instagram') {
+    return {
+      username: typeof settings.username === 'string' ? settings.username : ''
+    };
+  }
+
+  return {};
+}
 
 function normalizeSettings(settings = {}) {
+  const settingsByPlatform = settings.settingsByPlatform && typeof settings.settingsByPlatform === 'object'
+    ? settings.settingsByPlatform
+    : {};
+
   return {
-    username: typeof settings.username === 'string' ? settings.username : '',
     onboardingSeen: settings.onboardingSeen === true,
     guideVersion: Number.isInteger(settings.guideVersion)
       ? settings.guideVersion
-      : ONBOARDING_GUIDE_VERSION
+      : ONBOARDING_GUIDE_VERSION,
+    selectedPlatform: settings.selectedPlatform === 'instagram' ? 'instagram' : 'x',
+    selectedTarget: typeof settings.selectedTarget === 'string' ? settings.selectedTarget : 'all',
+    settingsByPlatform: {
+      x: normalizePlatformSettings('x', settingsByPlatform.x || settings),
+      instagram: normalizePlatformSettings('instagram', settingsByPlatform.instagram || {})
+    }
   };
 }
 
@@ -22,7 +47,7 @@ function getDefaultState() {
   };
 }
 
-function validateStorageStateV2(state) {
+function validateStorageState(state) {
   if (!state || typeof state !== 'object') {
     return { valid: false, error: 'State must be an object' };
   }
@@ -43,16 +68,8 @@ function validateStorageStateV2(state) {
     return { valid: false, error: 'settings must be an object' };
   }
 
-  if (typeof state.settings.username !== 'string') {
-    return { valid: false, error: 'settings.username must be a string' };
-  }
-
-  if (typeof state.settings.onboardingSeen !== 'boolean') {
-    return { valid: false, error: 'settings.onboardingSeen must be a boolean' };
-  }
-
-  if (!Number.isInteger(state.settings.guideVersion)) {
-    return { valid: false, error: 'settings.guideVersion must be an integer' };
+  if (!state.settings.settingsByPlatform || typeof state.settings.settingsByPlatform !== 'object') {
+    return { valid: false, error: 'settingsByPlatform must be an object' };
   }
 
   if (!Array.isArray(state.runs)) {
@@ -67,6 +84,8 @@ module.exports = {
   STATE_KEY,
   ONBOARDING_GUIDE_VERSION,
   normalizeSettings,
+  normalizePlatformSettings,
   getDefaultState,
-  validateStorageStateV2
+  validateStorageState,
+  validateStorageStateV2: validateStorageState
 };

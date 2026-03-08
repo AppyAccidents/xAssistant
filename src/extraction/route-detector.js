@@ -1,42 +1,26 @@
-function detectScopeFromUrl(url = '') {
-  const normalized = String(url).toLowerCase();
-  if (normalized.includes('/i/bookmarks')) {
-    return 'bookmarks';
-  }
+const { getPlatformAdapter, detectContextFromUrl } = require('../platforms/index.js');
 
-  if (/\/[^/]+\/likes(?:\?|$|\/)/.test(normalized)) {
-    return 'likes';
-  }
-
-  return 'unknown';
+function detectTargetFromUrl(url = '', platform = 'x') {
+  const adapter = getPlatformAdapter(platform);
+  return adapter ? adapter.detectTargetFromUrl(url) : 'unknown';
 }
 
-function scopeToRecordScope(scope) {
-  return scope === 'likes' ? 'like' : 'bookmark';
+function getTargetUrl(platform, target, input = {}) {
+  const adapter = getPlatformAdapter(platform);
+  if (!adapter) {
+    throw new Error(`Unsupported platform: ${platform}`);
+  }
+  return adapter.getRouteUrl(target, input);
 }
 
-function getScopeUrl(scope, username = '') {
-  if (scope === 'bookmarks') {
-    return 'https://x.com/i/bookmarks';
-  }
-
-  if (!username) {
-    throw new Error('Username is required for likes extraction');
-  }
-
-  return `https://x.com/${username}/likes`;
-}
-
-function endpointScopeHint(url = '') {
-  const lower = String(url).toLowerCase();
-  if (lower.includes('bookmarks')) return 'bookmarks';
-  if (lower.includes('likes')) return 'likes';
-  return 'unknown';
+function endpointTargetHint(url = '', platform = 'x') {
+  const adapter = getPlatformAdapter(platform);
+  return adapter ? adapter.getEndpointHint(url) : 'unknown';
 }
 
 module.exports = {
-  detectScopeFromUrl,
-  scopeToRecordScope,
-  getScopeUrl,
-  endpointScopeHint
+  detectTargetFromUrl,
+  getTargetUrl,
+  endpointTargetHint,
+  detectContextFromUrl
 };
